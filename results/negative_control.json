@@ -4,24 +4,24 @@
   "window_seconds": 35,
   "target_folder": "F:\\New folder\\Summer Internship\\gravity_2.0\\gravity_2\\demo\\victim_files",
   "attack_simulator_invoked": false,
-  "total_raw_events_collected": 160,
+  "total_raw_events_collected": 150,
   "classification_result": {
     "label": "G",
-    "confidence": 0.8609105348587036,
+    "confidence": 0.9995599389076233,
     "probabilities": {
-      "E": 0.03606519103050232,
-      "G": 0.8609105348587036,
-      "L": 0.10302428156137466
+      "E": 0.00039358282811008394,
+      "G": 0.9995599389076233,
+      "L": 4.647688547265716e-05
     },
-    "timestamp": "2026-08-12 01:25:47",
+    "timestamp": "2026-08-12 04:01:22",
     "window_stats": {
-      "event_count": 160,
+      "event_count": 150,
       "window_seconds": 30,
-      "elapsed_seconds": 35.827323
+      "elapsed_seconds": 35.64269
     },
-    "anomaly_score": 280.4719477054243,
+    "anomaly_score": 124.26920773078345,
     "is_anomaly": true
   },
-  "summary": "label=G confidence=0.8609 anomaly_score=280.4719477054243 is_anomaly=True",
+  "summary": "label=G confidence=0.9996 anomaly_score=124.26920773078345 is_anomaly=True",
   "interpretation": "is_anomaly=True with NO attack running. This supports B8: the demo's anomaly-path CRITICAL alert is plausibly self-noise (this monitoring process's own heavy ML library imports), not attack detection. The dual-model narrative needs re-examination."
 }

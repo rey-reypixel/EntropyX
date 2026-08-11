@@ -1,5 +1,6 @@
 import psutil
 import time
+import os
 
 from event_collector import collector
 
@@ -7,6 +8,19 @@ from event_collector import collector
 # ==========================================================
 # PROCESS MONITOR
 # ==========================================================
+
+# The PID of this monitoring process itself (main.py / whatever process
+# imports and runs this module). Excluded from every feature computed
+# below - see bugs_debugs.txt FINDING #12: process_monitor.py is
+# system-wide, so without this exclusion it also observes ITSELF,
+# including the heavy ML libraries (TensorFlow, XGBoost, scikit-learn)
+# loaded by event_collector.py's inference_engine import, which pushed
+# dll_loaded past 11,000 in a live demo window (100x+ beyond anything in
+# the training data) and, per results/negative_control.json, produced an
+# anomaly_score of 280 with zero attack activity. This process's own
+# resource footprint is not attacker-controlled behavior and must never
+# contribute to the features the model classifies on.
+MY_PID = os.getpid()
 
 # DLLs commonly used for cryptographic / encryption API calls.
 # Used as a live-host proxy for the "apistats" feature, which in the
@@ -144,6 +158,8 @@ def start():
     # deltas lets these features actually grow as a process's real behavior escalates.
     seen_processes = {}
     for pid in psutil.pids():
+        if pid == MY_PID:
+            continue
         seen_processes[pid] = (0, 0, 0)
 
     # Resampling already-tracked processes (memory_maps() per process, see BUG #3) is
@@ -181,6 +197,10 @@ def start():
                 try:
 
                     pid = proc.info["pid"]
+
+                    if pid == MY_PID:
+                        continue
+
                     is_new = pid not in seen_processes
 
                     if is_new:

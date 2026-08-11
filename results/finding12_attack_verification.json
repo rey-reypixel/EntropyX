@@ -1,0 +1,27 @@
+{
+  "generated_by": "scripts/finding12_attack_verification.py",
+  "purpose": "Pairs with results/negative_control.json (re-run after the Finding #12 fix) to test whether excluding the monitor's own PID from process_monitor.py resampling restores a genuine dual-model detection result during an actual attack.",
+  "fix_applied": "process_monitor.py excludes MY_PID (os.getpid()) from all resampling",
+  "window_seconds": 35,
+  "attack_launched_at_second": 5,
+  "target_folder": "F:\\New folder\\Summer Internship\\gravity_2.0\\gravity_2\\demo\\victim_files",
+  "attack_simulator_invoked": true,
+  "total_raw_events_collected": 1754,
+  "classification_result": {
+    "label": "G",
+    "confidence": 0.98692387342453,
+    "probabilities": {
+      "E": 0.009426439180970192,
+      "G": 0.98692387342453,
+      "L": 0.0036497781984508038
+    },
+    "timestamp": "2026-08-12 04:03:02",
+    "window_stats": {
+      "event_count": 1754,
+      "window_seconds": 30,
+      "elapsed_seconds": 42.181999
+    },
+    "anomaly_score": 106.93775173859733,
+    "is_anomaly": true
+  }
+}

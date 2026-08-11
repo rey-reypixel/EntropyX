@@ -729,5 +729,66 @@ standing rule for this project: any file containing raw process/network
 telemetry (full command lines, connection details) stays out of version
 control by default; only aggregated/derived statistics get committed.
 
+-----------------------------------------------------------
+FOLLOW-UP to FINDING #12  [2026-08-12]  Component: monitor/process_monitor.py
+-----------------------------------------------------------
+Description:
+  FINDING #12 diagnosed the live-demo classifier confusion and the
+  negative-control anomaly firing (see the v2 evaluation-audit entries
+  above) as caused by process_monitor.py observing its own process,
+  whose ML library imports push dll_loaded past 11,000. The proposed
+  remediation was to exclude the monitor's own PID from resampling.
+  This entry documents actually implementing that and re-testing.
+
+Fix implemented:
+  monitor/process_monitor.py: added MY_PID = os.getpid() at module load,
+  and skip processing entirely (both the initial seen_processes seeding
+  loop and the main per-cycle iteration) for any proc whose pid equals
+  MY_PID. The monitoring process now contributes nothing to
+  dll_loaded/apistats/directory_enumerated/tree_command_line/proc_pid.
+
+Re-verification (paired live runs, same demo/victim_files folder,
+same 35s window):
+                                    PID excl.  attack   P(G)     anomaly_score
+  Negative control, pre-fix          no        no      0.8610   280.47
+  Negative control, post-fix         yes       no      0.9996   124.27
+  Attack run, post-fix               yes       yes     0.9869   106.94
+
+Impact / interpretation:
+  The fix is real but INSUFFICIENT, not a false lead. Excluding the
+  monitor's own PID cut the no-attack anomaly score by 55.7% (280.47 ->
+  124.27) and raised the classifier's confidence in "Goodware" during
+  the no-attack case (86.1% -> 99.96%) - confirming the monitor's own
+  process was genuinely contributing meaningful noise, as FINDING #12
+  diagnosed.
+
+  However: during an ACTUAL attack, post-fix, the anomaly score (106.94)
+  is LOWER than the post-fix no-attack score (124.27), and the
+  classifier is MORE confident in "Goodware" during the attack (98.69%)
+  than it was pre-fix during the ORIGINAL demo trials. Neither model
+  discriminates attack from no-attack after this fix - if anything the
+  one small sample available here points the wrong way. This means
+  there is at least one additional, uncontrolled noise source on this
+  development machine beyond the monitoring process's own PID -
+  consistent with the dll_loaded=10,812 outlier already present in the
+  self-collected goodware corpus (report.txt, attributed at the time to
+  "other heavy processes... this machine was running Python + TensorFlow
+  + pandas + sklearn processes"). FINDING #12's diagnosis was correct
+  but incomplete: the problem is not "the monitor observes itself," it
+  is "the monitor observes ANY heavy process on the machine," of which
+  the monitor's own process was one prominent, but not the only,
+  example.
+
+Status: PARTIALLY FIXED. The specific self-observation defect FINDING
+#12 named is corrected and measurably helps. The broader problem -
+system-wide process monitoring is not robust to other legitimate heavy
+software running on the same machine - remains open. Candidate future
+work: clip/winsorize extreme per-feature values before scaling (so no
+single outlier process can dominate classification or reconstruction
+error, regardless of which process it is), or scope monitoring to a
+denylist/allowlist of processes rather than "every process, minus one."
+Full data: results/negative_control.json (post-fix),
+results/finding12_attack_verification.json.
+
 ===========================================================
 (Further entries appended as work proceeds.)

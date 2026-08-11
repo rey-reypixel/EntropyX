@@ -573,26 +573,51 @@ is not offset by the autoencoder catching the attack anyway - the
 autoencoder's CRITICAL alert in the original demo runs may never have
 been about the attack at all.
 
+UPDATE 2026-08-12: Finding #12's proposed fix (excluding the monitor's
+own PID from process_monitor.py resampling) was actually implemented
+and re-tested, not left as a proposal. Paired re-runs on the identical
+demo/victim_files folder and window:
+                              PID excl.  attack   P(Goodware)  anomaly_score
+  Negative control, pre-fix     no        no       0.8610       280.47
+  Negative control, post-fix    yes       no       0.9996       124.27
+  Attack run, post-fix          yes       yes      0.9869       106.94
+The fix is REAL, not a false lead: no-attack anomaly score dropped
+55.7% and classifier confidence in Goodware during no-attack rose from
+86.1% to 99.96%, confirming the monitor's own process was genuinely
+contributing noise. But it does NOT restore attack detection: during
+the actual attack, post-fix, the anomaly score (106.94) is LOWER than
+the post-fix no-attack score (124.27), and the classifier is even MORE
+confident in Goodware (98.69%) than before the fix. Neither model
+discriminates attack from no-attack after this fix. There is at least
+one more uncontrolled noise source on this machine beyond the monitor's
+own PID (consistent with the dll_loaded=10,812 outlier already in the
+self-collected goodware data, attributed to other heavy background
+software).
+
 IF ASKED ABOUT THE DEMO NOW: do not repeat the "two independent
 detection paths, one catches what the other misses" claim using this
-demo as evidence - it is contradicted by the negative control. Say
-instead: "We built a live demo, found the classifier confused by the
-monitor's own process noise (Finding #12), and initially read the
-autoencoder's CRITICAL alert as the system still catching the attack
-through its second path. Running a negative control - the same setup,
-no attack - showed the same alert fires just as strongly with nothing
-happening, which means that reading was wrong. This is itself a
-valuable finding: host-based anomaly detectors can fire on their own
-monitoring footprint, independent of any real attack, and you have to
-explicitly test for that with a negative control before trusting a
-positive result. We now believe fixing Finding #12 (excluding the
-monitor's own PID from process sampling) is a precondition for the
-demo meaning anything, not an optional cleanup item."
+demo as evidence - it is contradicted by the negative control, AND the
+proposed fix does not restore it. Say instead: "We built a live demo,
+found the classifier confused by the monitor's own process noise
+(Finding #12), and initially read the autoencoder's CRITICAL alert as
+the system still catching the attack through its second path. A
+negative control showed that reading was wrong - the same alert fires
+just as strongly with nothing happening. We then implemented and
+tested the proposed fix (excluding the monitor's own PID): it cut the
+false-alarm score by 55.7% and made the classifier meaningfully more
+confident and stable, but it did not restore the system's ability to
+tell an actual attack apart from ambient noise - the anomaly score
+during the real attack was, if anything, lower than during no attack.
+That tells us the problem is broader than 'the monitor sees itself' -
+it's 'the monitor isn't robust to any sufficiently heavy process on the
+machine,' which is a more general, more useful finding than the
+original diagnosis, and still open."
 
-This is a BETTER answer than defending the original framing - it shows
-you found a flaw in your own evaluation and didn't just report the
-result that looked good. That is the whole thesis of this project
-applied to itself.
+This is a BETTER answer than either defending the original framing or
+claiming a clean fix - it shows you found a flaw, tried a targeted fix,
+measured that the fix partially worked, and were honest that it didn't
+fully solve the problem. That is the whole thesis of this project
+applied to itself, twice over.
 
 
 =================================================================

@@ -1382,3 +1382,75 @@ more diverse locker-ransomware samples are necessary future work, not
 just desirable.
 
 Full numbers: results/cross_validation_repeated.json.
+
+
+-----------------------------------------------------------
+[2026-08-12] Attempted the fix for FINDING #12 and re-ran the
+negative control - real improvement, but not a fix for the
+underlying problem
+-----------------------------------------------------------
+The negative-control entry above concluded FINDING #12's self-noise
+explanation needed re-examination. This entry follows up by actually
+implementing FINDING #12's proposed remediation and re-testing, rather
+than leaving it as future work.
+
+Fix: monitor/process_monitor.py now excludes its own PID (MY_PID =
+os.getpid(), checked at both the initial process-seeding loop and the
+main per-cycle iteration) from all resampling. The monitoring process
+itself no longer contributes to dll_loaded/apistats/directory_enumerated/
+tree_command_line/proc_pid.
+
+Re-ran the negative control (scripts/negative_control.py) with the fix
+in place, and a paired new script (scripts/finding12_attack_verification.py)
+that runs the same monitor against the same demo/victim_files folder but
+DOES launch the attack simulator partway through the window - giving
+three comparable data points on the same folder/window/model:
+
+                              PID excl.  attack   P(Goodware)   anomaly_score
+  Negative control, pre-fix     no        no        0.8610        280.47
+  Negative control, post-fix    yes       no        0.9996        124.27
+  Attack run, post-fix          yes       yes       0.9869        106.94
+
+The fix is real, not a false lead: excluding the monitor's own PID cut
+the no-attack anomaly score by 55.7% and raised classifier confidence in
+Goodware during the no-attack case from 86.1% to 99.96%, confirming the
+monitor's own process was genuinely a meaningful noise contributor.
+
+But it does not solve the underlying problem. During an ACTUAL attack,
+post-fix, the anomaly score (106.94) is LOWER than the post-fix
+no-attack score (124.27), and the classifier is MORE confident in
+Goodware during the attack (98.69%) than in the original pre-fix demo
+trials. Post-fix, neither model's output discriminates attack from
+no-attack in this environment - in this small sample, if anything the
+relationship points the wrong way. This means at least one other
+uncontrolled noise source is present on this development machine beyond
+the monitoring process's own PID, consistent with the dll_loaded=10,812
+outlier already documented in the self-collected goodware corpus
+earlier in this file ("this machine was running Python + TensorFlow +
+pandas + sklearn processes at the time"). FINDING #12's diagnosis was
+correct but incomplete: the real problem is not "the monitor observes
+itself" specifically, it is "the monitor observes ANY sufficiently heavy
+process on the machine" - the monitor's own process was one clear,
+fixable example of that, not the only source.
+
+FOR THE PAPER: do not claim FINDING #12/Bug #12 is fixed, and do not
+claim the dual-model demo result is restored - neither is true. The
+correct framing is a second, more precise negative result: a targeted
+fix for the diagnosed cause produced a real, measured improvement
+(55.7% noise reduction) without restoring attack/no-attack
+discrimination, which itself demonstrates the problem is broader than
+originally scoped. This is a better, more honest paper contribution
+than either "fixed" or "not fixed" would have been - it shows the
+audit methodology applied to its own remediation, not just to the
+original defects.
+
+Status: PARTIALLY FIXED, re-scoped. Candidate future work (not
+attempted here): clip or winsorize extreme per-process feature values
+before scaling, so no single outlier process - whichever one it is -
+can dominate classification or reconstruction error; or restrict
+process monitoring to a defined allowlist/denylist rather than "every
+process except one known PID."
+
+Full data: results/negative_control.json (overwritten with the
+post-fix re-run; pre-fix values preserved in this entry and in
+bugs_debugs.txt's FINDING #12 follow-up), results/finding12_attack_verification.json.
