@@ -1,0 +1,327 @@
+{
+  "generated_by": "scripts/autoencoder_variance_study.py",
+  "n_seeds": 10,
+  "split_random_state": 123,
+  "goodware_split_sizes": {
+    "train": 1199,
+    "calibration": 400,
+    "held_out_test": 400
+  },
+  "known_limitation": "E/L (ransomware) rows are reused in both threshold-search and final-F1 steps - only one ransomware dataset is available. This fixes the GOODWARE side of the train/eval contamination (B2); E/L reuse is a separate, acknowledged limitation, not fixed here.",
+  "per_seed": [
+    {
+      "seed": 1,
+      "goodware_train_mean_error": 0.3111701833173554,
+      "goodware_calibration_mean_error": 0.8431228280366291,
+      "goodware_held_out_test_mean_error": 0.6945637578943814,
+      "E_mean_error": 146.85814967247833,
+      "L_mean_error": 212.01577074632033,
+      "chosen_percentile": 90,
+      "chosen_threshold": 0.5939683375323097,
+      "calibration_f1_at_chosen_threshold": 0.6124082721814543,
+      "held_out_test_f1_at_chosen_threshold": 0.6124082721814543,
+      "percentile_search": {
+        "90": {
+          "threshold": 0.5939683375323097,
+          "f1": 0.6124082721814543
+        },
+        "95": {
+          "threshold": 0.7683916519092193,
+          "f1": 0.5989010989010989
+        },
+        "97": {
+          "threshold": 1.6652550361997616,
+          "f1": 0.5386281588447653
+        },
+        "99": {
+          "threshold": 9.503086353392398,
+          "f1": 0.43735408560311284
+        }
+      }
+    },
+    {
+      "seed": 2,
+      "goodware_train_mean_error": 0.3411666940057774,
+      "goodware_calibration_mean_error": 0.7922470259810018,
+      "goodware_held_out_test_mean_error": 0.8323778231646827,
+      "E_mean_error": 156.0790404116234,
+      "L_mean_error": 320.1588155708281,
+      "chosen_percentile": 90,
+      "chosen_threshold": 0.4072468476675648,
+      "calibration_f1_at_chosen_threshold": 0.6192691029900332,
+      "held_out_test_f1_at_chosen_threshold": 0.6209193870752832,
+      "percentile_search": {
+        "90": {
+          "threshold": 0.4072468476675648,
+          "f1": 0.6192691029900332
+        },
+        "95": {
+          "threshold": 0.8745823554120891,
+          "f1": 0.5823488533703961
+        },
+        "97": {
+          "threshold": 1.0618930583573012,
+          "f1": 0.5511811023622047
+        },
+        "99": {
+          "threshold": 13.50267714006452,
+          "f1": 0.4300234558248632
+        }
+      }
+    },
+    {
+      "seed": 3,
+      "goodware_train_mean_error": 0.3707756690489627,
+      "goodware_calibration_mean_error": 0.7315394427621608,
+      "goodware_held_out_test_mean_error": 0.8998413350612651,
+      "E_mean_error": 67.95656114646586,
+      "L_mean_error": 153.35921580705798,
+      "chosen_percentile": 90,
+      "chosen_threshold": 0.352942678682367,
+      "calibration_f1_at_chosen_threshold": 0.6554621848739496,
+      "held_out_test_f1_at_chosen_threshold": 0.6537717601547389,
+      "percentile_search": {
+        "90": {
+          "threshold": 0.352942678682367,
+          "f1": 0.6554621848739496
+        },
+        "95": {
+          "threshold": 0.6742213339291013,
+          "f1": 0.6002747252747253
+        },
+        "97": {
+          "threshold": 1.2081347355313687,
+          "f1": 0.543884892086331
+        },
+        "99": {
+          "threshold": 8.962220087849817,
+          "f1": 0.423861852433281
+        }
+      }
+    },
+    {
+      "seed": 4,
+      "goodware_train_mean_error": 0.44261397064464947,
+      "goodware_calibration_mean_error": 0.6532257344505649,
+      "goodware_held_out_test_mean_error": 0.6067117271941025,
+      "E_mean_error": 62.97165553249299,
+      "L_mean_error": 104.56624640915157,
+      "chosen_percentile": 90,
+      "chosen_threshold": 0.3609229940491516,
+      "calibration_f1_at_chosen_threshold": 0.643603133159269,
+      "held_out_test_f1_at_chosen_threshold": 0.6461336828309305,
+      "percentile_search": {
+        "90": {
+          "threshold": 0.3609229940491516,
+          "f1": 0.643603133159269
+        },
+        "95": {
+          "threshold": 0.6905667972368117,
+          "f1": 0.6131883072739633
+        },
+        "97": {
+          "threshold": 1.9600575382067895,
+          "f1": 0.5150403521643434
+        },
+        "99": {
+          "threshold": 8.49973626892749,
+          "f1": 0.42756460454189504
+        }
+      }
+    },
+    {
+      "seed": 5,
+      "goodware_train_mean_error": 0.28837049201536347,
+      "goodware_calibration_mean_error": 0.8224480705568784,
+      "goodware_held_out_test_mean_error": 0.8109566855656972,
+      "E_mean_error": 65.5469382749705,
+      "L_mean_error": 140.43091972258327,
+      "chosen_percentile": 90,
+      "chosen_threshold": 0.15232892173365256,
+      "calibration_f1_at_chosen_threshold": 0.6810399492707673,
+      "held_out_test_f1_at_chosen_threshold": 0.6801773274224192,
+      "percentile_search": {
+        "90": {
+          "threshold": 0.15232892173365256,
+          "f1": 0.6810399492707673
+        },
+        "95": {
+          "threshold": 0.339859593759323,
+          "f1": 0.6345381526104418
+        },
+        "97": {
+          "threshold": 0.4541183413533692,
+          "f1": 0.6240652617267165
+        },
+        "99": {
+          "threshold": 8.128685831330838,
+          "f1": 0.4250980392156863
+        }
+      }
+    },
+    {
+      "seed": 6,
+      "goodware_train_mean_error": 0.4261250120379113,
+      "goodware_calibration_mean_error": 0.638703161580243,
+      "goodware_held_out_test_mean_error": 0.9027156942814056,
+      "E_mean_error": 99.74354240486925,
+      "L_mean_error": 183.72242027212334,
+      "chosen_percentile": 90,
+      "chosen_threshold": 0.4957653020641067,
+      "calibration_f1_at_chosen_threshold": 0.6378519973804846,
+      "held_out_test_f1_at_chosen_threshold": 0.6399474375821288,
+      "percentile_search": {
+        "90": {
+          "threshold": 0.4957653020641067,
+          "f1": 0.6378519973804846
+        },
+        "95": {
+          "threshold": 0.6628948000757904,
+          "f1": 0.6154891304347826
+        },
+        "97": {
+          "threshold": 0.8610910587559834,
+          "f1": 0.5856044723969253
+        },
+        "99": {
+          "threshold": 4.130273460417893,
+          "f1": 0.48338368580060426
+        }
+      }
+    },
+    {
+      "seed": 7,
+      "goodware_train_mean_error": 0.37684289375406466,
+      "goodware_calibration_mean_error": 0.8579710297971229,
+      "goodware_held_out_test_mean_error": 0.9693128823618263,
+      "E_mean_error": 73.73524938810603,
+      "L_mean_error": 150.17702238420387,
+      "chosen_percentile": 90,
+      "chosen_threshold": 0.3904949106490635,
+      "calibration_f1_at_chosen_threshold": 0.6484730344379467,
+      "held_out_test_f1_at_chosen_threshold": 0.6451195862960569,
+      "percentile_search": {
+        "90": {
+          "threshold": 0.3904949106490635,
+          "f1": 0.6484730344379467
+        },
+        "95": {
+          "threshold": 0.7792282791948415,
+          "f1": 0.590186592950933
+        },
+        "97": {
+          "threshold": 0.9922337640637003,
+          "f1": 0.5706214689265536
+        },
+        "99": {
+          "threshold": 17.25864940915196,
+          "f1": 0.3527481542247744
+        }
+      }
+    },
+    {
+      "seed": 8,
+      "goodware_train_mean_error": 0.42992319281091335,
+      "goodware_calibration_mean_error": 0.8414405684422209,
+      "goodware_held_out_test_mean_error": 1.0347356958015543,
+      "E_mean_error": 76.30194619464486,
+      "L_mean_error": 169.60225853001972,
+      "chosen_percentile": 90,
+      "chosen_threshold": 0.40862938345460426,
+      "calibration_f1_at_chosen_threshold": 0.6387434554973822,
+      "held_out_test_f1_at_chosen_threshold": 0.64,
+      "percentile_search": {
+        "90": {
+          "threshold": 0.40862938345460426,
+          "f1": 0.6387434554973822
+        },
+        "95": {
+          "threshold": 0.8775232650832855,
+          "f1": 0.578397212543554
+        },
+        "97": {
+          "threshold": 3.0264839368197163,
+          "f1": 0.49516728624535317
+        },
+        "99": {
+          "threshold": 11.315794317694795,
+          "f1": 0.42138364779874216
+        }
+      }
+    },
+    {
+      "seed": 9,
+      "goodware_train_mean_error": 0.2845039680952257,
+      "goodware_calibration_mean_error": 0.6850409283416354,
+      "goodware_held_out_test_mean_error": 0.7569057957876578,
+      "E_mean_error": 66.90201512517615,
+      "L_mean_error": 117.1351841821876,
+      "chosen_percentile": 90,
+      "chosen_threshold": 0.46739570145159004,
+      "calibration_f1_at_chosen_threshold": 0.6179401993355482,
+      "held_out_test_f1_at_chosen_threshold": 0.62,
+      "percentile_search": {
+        "90": {
+          "threshold": 0.46739570145159004,
+          "f1": 0.6179401993355482
+        },
+        "95": {
+          "threshold": 0.6332617665707526,
+          "f1": 0.5892116182572614
+        },
+        "97": {
+          "threshold": 1.1832818554897198,
+          "f1": 0.5491039426523298
+        },
+        "99": {
+          "threshold": 5.66698914476984,
+          "f1": 0.43369734789391573
+        }
+      }
+    },
+    {
+      "seed": 10,
+      "goodware_train_mean_error": 0.5222868693915673,
+      "goodware_calibration_mean_error": 0.8010359358764154,
+      "goodware_held_out_test_mean_error": 1.0541275381344035,
+      "E_mean_error": 96.78919676678106,
+      "L_mean_error": 186.66114401770756,
+      "chosen_percentile": 90,
+      "chosen_threshold": 0.7814814479856297,
+      "calibration_f1_at_chosen_threshold": 0.6124082721814543,
+      "held_out_test_f1_at_chosen_threshold": 0.6128170894526035,
+      "percentile_search": {
+        "90": {
+          "threshold": 0.7814814479856297,
+          "f1": 0.6124082721814543
+        },
+        "95": {
+          "threshold": 1.1983502447016,
+          "f1": 0.5694249649368864
+        },
+        "97": {
+          "threshold": 1.952846465311925,
+          "f1": 0.5365148228488793
+        },
+        "99": {
+          "threshold": 9.947376553712964,
+          "f1": 0.422623723487824
+        }
+      }
+    }
+  ],
+  "held_out_f1_mean": 0.6371294542995615,
+  "held_out_f1_std": 0.020123611856546063,
+  "held_out_f1_min": 0.6124082721814543,
+  "held_out_f1_max": 0.6801773274224192,
+  "historical_single_run_f1_series": [
+    0.7,
+    0.6216,
+    0.7036,
+    0.6069,
+    0.5811
+  ],
+  "historical_range": 0.12250000000000005,
+  "this_study_seed_only_range": 0.06776905524096488,
+  "interpretation": "If this study's seed-only range is comparable to the historical range, B10 is confirmed: the F1 fluctuation across retrains is substantially explained by unseeded training variance, not by the data changes each retrain was attributed to. If this study's range is much smaller than the historical range, the data changes likely do explain most of the historical swing, and training variance is a minor contributor."
+}

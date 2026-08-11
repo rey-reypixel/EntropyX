@@ -1,3 +1,4 @@
+import argparse
 import pandas as pd
 import numpy as np
 import joblib
@@ -6,6 +7,26 @@ from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense
 from tensorflow.keras.losses import MeanSquaredError
+
+# ==========================================
+# SEEDING (v2 audit design principle: randomness must be seeded and
+# variance measured, not assumed - see bugs_debugs.txt INVESTIGATION #11
+# and scripts/autoencoder_variance_study.py, which runs this training
+# procedure across 10 seeds to measure how much of the F1 fluctuation
+# reported across retrains (0.70 -> 0.62 -> 0.70 -> 0.61 -> 0.58) is
+# training-variance noise vs a real data effect)
+# ==========================================
+
+parser = argparse.ArgumentParser(description="Train the goodware-only autoencoder")
+parser.add_argument("--seed", type=int, default=None,
+                     help="Random seed for numpy/tensorflow (unset = nondeterministic, matches original behavior)")
+args, _ = parser.parse_known_args()
+
+if args.seed is not None:
+    np.random.seed(args.seed)
+    import tensorflow as tf
+    tf.random.set_seed(args.seed)
+    print(f"[SEED] Using random seed {args.seed}")
 
 # ==========================================
 # LOAD DATASET
