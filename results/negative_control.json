@@ -1,0 +1,27 @@
+{
+  "generated_by": "scripts/negative_control.py",
+  "purpose": "Test whether the demo's reported anomaly_score=1.0 reflects genuine attack detection or self-noise (v2 audit finding B8), by running the same monitor stack against the same folder with no attack invoked.",
+  "window_seconds": 35,
+  "target_folder": "F:\\New folder\\Summer Internship\\gravity_2.0\\gravity_2\\demo\\victim_files",
+  "attack_simulator_invoked": false,
+  "total_raw_events_collected": 160,
+  "classification_result": {
+    "label": "G",
+    "confidence": 0.8609105348587036,
+    "probabilities": {
+      "E": 0.03606519103050232,
+      "G": 0.8609105348587036,
+      "L": 0.10302428156137466
+    },
+    "timestamp": "2026-08-12 01:25:47",
+    "window_stats": {
+      "event_count": 160,
+      "window_seconds": 30,
+      "elapsed_seconds": 35.827323
+    },
+    "anomaly_score": 280.4719477054243,
+    "is_anomaly": true
+  },
+  "summary": "label=G confidence=0.8609 anomaly_score=280.4719477054243 is_anomaly=True",
+  "interpretation": "is_anomaly=True with NO attack running. This supports B8: the demo's anomaly-path CRITICAL alert is plausibly self-noise (this monitoring process's own heavy ML library imports), not attack detection. The dual-model narrative needs re-examination."
+}
