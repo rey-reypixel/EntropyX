@@ -379,31 +379,54 @@ bugs_debugs.txt BUG #13. THESE are the numbers to say out loud:
 XGBoost Classifier - GroupKFold cross-validation (grouped by exact
 12-feature vector, so no duplicate row is ever split across train/test),
 2,999-row dataset:
-  Mean accuracy:  85.59%  (std 15.39%, range 43.88%-100% across 10 folds)
-  Aggregate confusion matrix (order E/G/L):
+  Single-run mean: 85.59%  (std 15.39%, range 43.88%-100% across 10 folds)
+  Aggregate confusion matrix (order E/G/L), single run:
     E: [674,  76,  50]
     G: [245, 1754,   0]   <- G predicted as E: ~0% before, 12.3% now
     L: [ 50,  11, 139]    <- L precision/recall both ~70%, down from
                               near-perfect
 
-  WHY THE DROP: projecting the 50-feature source dataset to this
-  project's 12 live-collectable features collapses class separation -
-  goodware alone collapses from 1000 sandboxed executions to 117
-  distinct feature vectors, and 61.5% of the full dataset's rows share
-  an exact vector with another row. The naive stratified k-fold used
-  before this correction let a duplicated row's twin sit in the
-  training fold, so the "held-out" copy was memorised, not generalised
-  to. That is what 98.10% was actually measuring.
+  DON'T STOP AT THE SINGLE-RUN NUMBER - std=15.39% on its own overstates
+  how uncertain the OVERALL estimate is. Repeated the whole procedure
+  10 TIMES (10 different random group-to-fold splits, 100 total fold
+  evaluations, model training itself unchanged at seed=42):
+    Grand mean across repeats: 85.50% - confirms 85.59% wasn't a fluke.
+    Repeated-CV interval (valid, uses repeat-level means as the
+      independent unit - individual folds within one run are NOT
+      independent of each other, so a naive CI on them would repeat the
+      same mistake the old 98.10% figure's CI already made):
+      [84.86%, 86.14%] - much tighter than std=15.39% suggested.
+    Raw per-fold spread across all 100 folds: [40.48%, 100.00%] - STAYS
+      just as wide, every single repeat.
+  TWO-SENTENCE VERSION IF ASKED: "Our overall accuracy estimate is
+  stable - 85.5%, tight interval, confirmed across 10 independent
+  reruns. But any single fold can still land anywhere from 40% to 100%,
+  consistently, which is a structural data-scarcity issue (class L has
+  only 60 distinct feature vectors), not something that averages away."
 
-  WHY THE VARIANCE IS SO HIGH ON CLASS L SPECIFICALLY: only 60 distinct
-  12-feature vectors exist among the 200 L rows - about 6 groups per
-  fold on average, too few for a stable estimate. This is a genuine
+  WHY THE DROP FROM 98.10% IN THE FIRST PLACE: projecting the 50-feature
+  source dataset to this project's 12 live-collectable features
+  collapses class separation - goodware alone collapses from 1000
+  sandboxed executions to 117 distinct feature vectors, and 61.5% of
+  the full dataset's rows share an exact vector with another row. The
+  naive stratified k-fold used before this correction let a duplicated
+  row's twin sit in the training fold, so the "held-out" copy was
+  memorised, not generalised to. That is what 98.10% was actually
+  measuring - and its own reported "95% CI" had the SAME independence
+  problem described above, just never caught until this pass.
+
+  WHY THE PER-FOLD VARIANCE IS SO HIGH ON CLASS L SPECIFICALLY: only 60
+  distinct 12-feature vectors exist among the 200 L rows - about 6
+  groups per fold on average, too few for a stable per-fold estimate.
+  Confirmed structural (not noise) by seeing the same [40%,100%] spread
+  in every one of the 10 independent repeats. This is a genuine
   data-scarcity limitation (state it as future work: more diverse
   locker-ransomware samples), not a bug in the evaluation.
 
-  Top 3 most important features (unchanged by this correction - this is
-  a training-time XGBoost property, not a CV-methodology one):
-  directory_enumerated (27.4%), file_created (13.8%), apistats (12.8%).
+  Top 3 most important features (unchanged by any of the above - this
+  is a training-time XGBoost property of the final shipped model, not a
+  CV-methodology one): directory_enumerated (20.6%), apistats (17.5%),
+  file_created (14.2%).
 
   STILL WORTH SAYING: 98.10% was the number reported under
   StratifiedKFold(shuffle=True), treating every row as independent. Say
@@ -603,21 +626,28 @@ A: They catch different things in principle - the classifier is precise
 
 Q: "How do you know [accuracy number] is a real number and not
    overfitting / lucky?"
-A: Two separate things had to be checked, and only checking the first
-   one is not enough: (1) k-fold cross-validation, reporting a MEAN and
-   STANDARD DEVIATION across folds rather than one split, which is why
-   we don't trust a single train_test_split number; but ALSO (2)
-   whether the folds themselves are independent. We initially reported
-   98.10% (std 0.62%) from ordinary shuffled 10-fold CV, then found the
-   dataset has extensive duplicate feature vectors (repeated sandbox
-   runs collapsing to the same 12-feature values) that shuffled CV
-   doesn't protect against - a "held-out" row's exact duplicate could
-   still be sitting in the training fold. Re-ran with GroupKFold
-   (grouping by exact feature vector, so duplicates can never split
-   across train/test): 85.59% (std 15.39%). That's the number we now
-   report as headline, with the 98.10% figure kept alongside it,
-   explicitly labeled as inflated by duplicate-row leakage - the gap
-   between the two is itself part of the finding.
+A: THREE separate things had to be checked, and stopping after only one
+   or two is not enough: (1) k-fold cross-validation, reporting a MEAN
+   and STANDARD DEVIATION across folds rather than one split, which is
+   why we don't trust a single train_test_split number; (2) whether the
+   folds themselves are independent - initially reported 98.10% (std
+   0.62%) from ordinary shuffled 10-fold CV, then found the dataset has
+   extensive duplicate feature vectors that shuffled CV doesn't protect
+   against, and corrected to 85.59% (std 15.39%) with StratifiedGroupKFold;
+   (3) whether the FOLDS used to compute that std are themselves a valid
+   basis for a confidence interval - they aren't (each pair of folds
+   shares 8/9 of its training data, so they're correlated; no unbiased
+   estimator of k-fold CV variance exists - Bengio & Grandvalet, 2004).
+   Repeating the whole grouped procedure 10 times (10 different random
+   splits, 100 total fold evaluations) gives a defensible answer: grand
+   mean 85.50% (confirms the single run wasn't a fluke), repeated-CV
+   interval [84.86%, 86.14%] (much tighter than std=15.39% alone
+   suggested), while the raw per-fold spread stays [40%, 100%] in every
+   repeat - meaning the OVERALL estimate is stable, but any INDIVIDUAL
+   fold is genuinely, structurally volatile (class L's low group count),
+   not just noisy. Report all three numbers if pushed: 98.10% (naive,
+   leakage-inflated), 85.59% (single grouped run), 85.50% +/- ~1.3 points
+   (repeated, the one to actually stand behind).
 
 Q: "What happens if ransomware encrypts files very slowly, to
    stay under the radar?"

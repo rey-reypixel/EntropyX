@@ -1321,3 +1321,64 @@ instead, which is what the test actually intended to pin.
 Models saved: models/practical_xgboost.pkl, practical_scaler.pkl,
 label_encoder.pkl, autoencoder_model.keras, autoencoder_scaler.pkl.
 Full training summary: results/final_model_training.json.
+
+
+-----------------------------------------------------------
+[2026-08-12] Fixed the confidence-interval methodology for the
+GroupKFold result - the naive formula is invalid, and a proper fix
+reveals a more nuanced picture than "std = 15.39%" alone communicates
+-----------------------------------------------------------
+The 98.10% figure's reported "95% CI (97.72%-98.48%)" used
+mean +/- 1.96*std/sqrt(10), which assumes the 10 fold accuracies are
+independent. They are not: each pair of folds shares 8/9 of its
+training data. Bengio & Grandvalet (2004, "No Unbiased Estimator of the
+Variance of K-Fold Cross-Validation") proved no unbiased estimator of
+k-fold CV's true variance exists - the naive formula UNDERSTATES
+uncertainty. This was already true for the old number and never
+corrected; with the GroupKFold result's std now at 15.39% (vs the old
+0.62%), computing a naive CI on it the same way would be far more
+misleading, not just imprecise - flagged as a limitation in this file's
+2026-08-12 evaluation-audit entry above, now addressed rather than left
+as a caveat.
+
+scripts/cross_validate_grouped_repeated.py does NOT invent a valid CI
+where none exists. It reports two more defensible, explicitly-labeled
+quantities instead, by running the full StratifiedGroupKFold procedure
+10 TIMES, each with a different random group-to-fold assignment (model
+training itself stays seed=42 throughout - only the split varies):
+
+  1. Treat each of the 10 REPEATS' own mean (across its 10 folds) as one
+     replicate - 10 replicates, which use genuinely independent
+     group-to-fold assignments, unlike folds within a single run. A
+     standard error computed across these 10 replicate-level means is a
+     recognized, more defensible correction for k-fold CV variance than
+     treating individual folds as the independent unit.
+  2. The raw 2.5th/97.5th percentile across all 100 individual fold
+     accuracies - an assumption-light empirical range, not a CI on the
+     mean.
+
+RESULT:
+  Grand mean (across 10 repeats): 85.50% - matches the single-run
+    result (85.59%) closely; that number was not a fluke of one split.
+  Repeated-CV interval (repeat-level SE): [84.86%, 86.14%] - MUCH
+    tighter than the naive fold-level std (15.39%) suggested, because
+    averaging over 10 folds within each repeat smooths out most of the
+    fold-to-fold noise before computing the interval.
+  Raw fold-level spread (all 100 individual folds): [40.48%, 100.00%] -
+    stays just as wide as the single-run's [43.88%, 100.00%].
+
+INTERPRETATION - this is a genuinely more informative picture than
+"std = 15.39%" alone communicated, not just a statistically cleaner
+version of the same finding: the OVERALL accuracy estimate is fairly
+stable and trustworthy (85.5% +/- ~1.3 points), but ANY SINGLE fold can
+still be wildly unrepresentative (as low as 40%), consistently across
+all 10 independent repeats - meaning this is a structural property of
+the data (class L's 60 distinct feature vectors, ~6 groups per fold),
+not noise that averages out with more repeats. Both numbers belong in
+the paper: report 85.5% (repeated-CV interval [84.9%, 86.1%]) as the
+headline accuracy with a defensible uncertainty statement, and
+separately report the [40%, 100%] per-fold spread as evidence for why
+more diverse locker-ransomware samples are necessary future work, not
+just desirable.
+
+Full numbers: results/cross_validation_repeated.json.

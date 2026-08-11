@@ -1,0 +1,52 @@
+{
+  "generated_by": "scripts/cross_validate_grouped_repeated.py",
+  "n_repeats": 10,
+  "n_folds_per_repeat": 10,
+  "total_fold_evaluations": 100,
+  "model_seed": 42,
+  "split_seeds": [
+    42,
+    7,
+    13,
+    99,
+    123,
+    2024,
+    555,
+    8,
+    77,
+    314
+  ],
+  "total_group_leakage_violations": 0,
+  "per_repeat_mean_accuracy": [
+    0.8559138677342781,
+    0.8597091667508708,
+    0.8527945995491886,
+    0.8795491231150923,
+    0.8445383269877678,
+    0.84546546302028,
+    0.858730769142729,
+    0.8494981198747826,
+    0.8457905077139254,
+    0.8580713927641911
+  ],
+  "grand_mean_accuracy": 0.8550061336653105,
+  "repeat_level_std": 0.010377999105979845,
+  "repeat_level_standard_error": 0.0032818114730087476,
+  "repeated_cv_95_interval": [
+    0.8485737831782134,
+    0.8614384841524076
+  ],
+  "all_fold_accuracies_min": 0.40476190476190477,
+  "all_fold_accuracies_max": 1.0,
+  "empirical_2_5_97_5_percentile_of_fold_accuracies": [
+    0.4300170068027211,
+    1.0
+  ],
+  "single_run_result_for_comparison": {
+    "source": "results/cross_validation_grouped.json",
+    "mean_accuracy": 0.8559138677342781,
+    "std_accuracy": 0.15389966254590756,
+    "note": "repeat 0 above (split_seed=42) reproduces this exactly - same fold assignment"
+  },
+  "methodology_note": "There is no unbiased estimator of k-fold CV variance (Bengio & Grandvalet, 2004) - folds within one CV run share most of their training data, so treating them as independent (the naive mean +/- 1.96*std/sqrt(k) formula used for the original, now-superseded 98.10% figure) understates uncertainty. This script does not claim to produce a formally valid 95% CI either - it reports two more defensible, explicitly-labeled alternatives instead: (1) a standard-error interval computed ACROSS REPEATS (different repeats use independent group-to-fold assignments, so repeat-level means are a more defensible unit of replication than individual folds), and (2) the raw empirical percentile spread of all individual fold results, which makes no independence assumption at all. For the paper: report the grand mean with the repeated-CV interval, and separately note the wider raw fold-to-fold spread as evidence of how sensitive the result is to which specific groups land in which fold - itself a finding (class L's low group count, 60 distinct vectors, drives most of this spread)."
+}
