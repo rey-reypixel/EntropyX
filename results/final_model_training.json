@@ -1,0 +1,38 @@
+{
+  "generated_by": "scripts/train_final_models.py",
+  "purpose": "Produce the final shipped model artifacts using the full dataset and a documented seed, now that separate CV/seed studies (results/cross_validation_grouped.json, results/autoencoder_variance.json) give trustworthy generalization estimates. Backup of the previous artifacts: models/backup_pre_v2_final_retrain_20260812/",
+  "xgboost": {
+    "seed": 42,
+    "trained_on_rows": 2999,
+    "trained_on_fraction_of_dataset": 1.0,
+    "training_set_fit_accuracy_sanity_check_only": 0.9819939979993331,
+    "top_3_features": [
+      [
+        "directory_enumerated",
+        0.206424281001091
+      ],
+      [
+        "apistats",
+        0.1746075302362442
+      ],
+      [
+        "file_created",
+        0.14240746200084686
+      ]
+    ],
+    "generalization_estimate_source": "results/cross_validation_grouped.json (85.59% mean, std 15.39%) - NOT measured by this script"
+  },
+  "autoencoder": {
+    "seed": 42,
+    "trained_on_goodware_rows": 1999,
+    "trained_on_fraction_of_goodware": 1.0,
+    "chosen_percentile": 90,
+    "chosen_threshold": 0.7742277119238383,
+    "in_sample_f1_at_chosen_threshold": 0.5596330275229358,
+    "goodware_avg_error": 0.5452257774906581,
+    "E_avg_error": 94.98574225628838,
+    "L_avg_error": 184.71227924933478,
+    "old_config_threshold": 0.541678,
+    "held_out_f1_estimate_source": "results/autoencoder_variance.json (0.6371 +/- 0.0201, 10 seeds) - NOT measured by this script"
+  }
+}

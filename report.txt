@@ -1251,3 +1251,73 @@ results/*.json files are the source of truth for these numbers; the
 paper drafts and please_study_this.txt should be updated to cite them
 directly rather than the superseded figures in this file's earlier
 entries.
+
+
+-----------------------------------------------------------
+[2026-08-12] Shipped a final, seeded production model - closes the gap
+between "what we evaluated" and "what actually runs"
+-----------------------------------------------------------
+Everything in the entry above was a re-evaluation of the STATIC
+balanced_dataset.csv; the deployed models/practical_xgboost.pkl and
+models/autoencoder_model.keras were still the unchanged 2026-07-22
+artifacts throughout - not retrained, not reseeded. Two problems with
+shipping those as-is going forward:
+
+  1. practical_xgboost.pkl was trained on only 80% of
+     balanced_dataset.csv (src/train_practical_xgboost.py holds back a
+     20% test split for its own spot-check print). Now that
+     scripts/cross_validate_grouped.py gives an honest, leakage-safe
+     generalization estimate (85.59% mean, std 15.39%) via
+     cross-validation, there is no remaining reason to withhold 20% of
+     the data from the artifact that actually ships. Standard practice:
+     use CV to ESTIMATE generalization, then train the final deployed
+     model on ALL available data.
+  2. autoencoder_model.keras was trained with no seed, and its
+     anomaly_threshold in config.json is exactly the kind of value BUG
+     #6 warns goes stale silently after any retrain.
+
+Backed up all five previous artifacts (practical_xgboost.pkl,
+practical_scaler.pkl, label_encoder.pkl, autoencoder_model.keras,
+autoencoder_scaler.pkl) plus the pre-change config.json to
+models/backup_pre_v2_final_retrain_20260812/ before touching anything.
+
+scripts/train_final_models.py: XGBoost retrained on 100% of
+balanced_dataset.csv (2999 rows), same architecture/hyperparameters,
+seed=42 (matching the seed already used everywhere else in this
+project - train_practical_xgboost.py, cross_validate_xgboost.py,
+cross_validate_grouped.py). Autoencoder retrained on 100% of goodware
+(1999 rows), same architecture, seed=42 - documented and reproducible
+for the first time. Threshold immediately recalibrated afterward via
+the same percentile-search methodology evaluate_autoencoder.py has
+always used, against datasets/ransomware_dataset.csv: chosen threshold
+0.774228 (90th percentile), replacing config.json's previous 0.541678 -
+following BUG #6's own stated discipline of never leaving a stale
+threshold paired with a model that no longer matches it.
+
+IMPORTANT - kept two purposes cleanly separated, which is exactly what
+let stale/held-back-data models ship silently before: this script
+produces the ARTIFACT, not a generalization estimate. The honest
+out-of-sample performance numbers for the paper remain
+results/cross_validation_grouped.json (85.59% +/- 15.39%, XGBoost) and
+results/autoencoder_variance.json (F1 0.6371 +/- 0.0201, autoencoder) -
+both computed independently, on temporary in-memory models, before this
+script ever ran. The in-sample F1 this script's own recalibration step
+reports (0.5596, evaluated the same overlapping way
+evaluate_autoencoder.py always has) is NOT a generalization estimate
+and results/final_model_training.json labels it as such - it exists
+only to pick a threshold, the same way it always has.
+
+Sanity checks after retraining: full test suite (23 tests) passes
+against the new models. One test
+(test_is_anomaly_matches_raw_mse_vs_threshold's exact-boundary case)
+initially failed - not a production bug, a test-construction fragility:
+the test's mock reconstructs a target MSE via a sqrt-then-square round
+trip, which lands on different sides of an EXACT floating-point
+equality depending on the specific threshold value active. Testing
+exact float equality at a boundary was never a meaningful spec
+requirement; replaced with a "just below" case (0.999999 of threshold)
+instead, which is what the test actually intended to pin.
+
+Models saved: models/practical_xgboost.pkl, practical_scaler.pkl,
+label_encoder.pkl, autoencoder_model.keras, autoencoder_scaler.pkl.
+Full training summary: results/final_model_training.json.

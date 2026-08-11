@@ -1,21 +1,12 @@
 {
   "monitoring": {
-    "enabled_monitors": [
-      "file",
-      "process",
-      "network",
-      "registry"
-    ],
+    "enabled_monitors": ["file", "process", "network", "registry"],
     "monitor_folders": [
       "test_folder"
     ],
     "file_monitor": {
       "recursive": true,
-      "ignore_patterns": [
-        ".git",
-        "__pycache__",
-        "node_modules"
-      ]
+      "ignore_patterns": [".git", "__pycache__", "node_modules"]
     },
     "process_monitor": {
       "poll_interval": 2,
@@ -27,12 +18,7 @@
     },
     "registry_monitor": {
       "poll_interval": 5,
-      "monitor_hives": [
-        "HKEY_LOCAL_MACHINE",
-        "HKEY_CURRENT_USER",
-        "HKEY_CLASSES_ROOT",
-        "HKEY_USERS"
-      ]
+      "monitor_hives": ["HKEY_LOCAL_MACHINE", "HKEY_CURRENT_USER", "HKEY_CLASSES_ROOT", "HKEY_USERS"]
     }
   },
   "ml": {
@@ -41,7 +27,7 @@
     "scaler_path": "models/practical_scaler.pkl",
     "autoencoder_path": "models/autoencoder_model.keras",
     "classification_threshold": 0.85,
-    "anomaly_threshold": 0.7742277119238383,
+    "anomaly_threshold": 0.541678,
     "aggregation": {
       "window_seconds": 30,
       "min_events": 10
@@ -52,7 +38,7 @@
     "log_dir": "monitor/logs",
     "console_output": true,
     "critical_threshold": 0.85,
-    "warning_threshold": 0.7
+    "warning_threshold": 0.70
   },
   "prevention": {
     "enabled": false,

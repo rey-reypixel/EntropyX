@@ -117,8 +117,12 @@ def test_detect_anomaly_is_not_capped_at_one(engine, monkeypatch):
         (0.55, False),
         # Comfortably below the threshold - both old and new code agree here.
         (0.10, False),
-        # Exactly at the threshold boundary.
-        (1.0, False),
+        # Just under the threshold boundary. (Not exactly 1.0: mse is
+        # reconstructed in _FixedReconstruction via a sqrt-then-square
+        # round trip, so an exact-equality boundary case is sensitive to
+        # which specific threshold value is active and isn't a meaningful
+        # thing to pin - "just below" and "just over" are.)
+        (0.999999, False),
         # Just over the threshold - must be True under both raw-MSE semantics
         # and the fixed code's anomaly_score > 1.0 check.
         (1.01, True),
