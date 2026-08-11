@@ -1,0 +1,1075 @@
+WATCHRANSOM - WORK REPORT
+===========================================================
+This file documents every change made to the project from
+2026-07-21 onward, and the reasoning behind each change.
+Intended to support the research paper write-up (methodology
+and limitations sections in particular).
+===========================================================
+
+
+-----------------------------------------------------------
+[2026-07-21] Initial Project Audit
+-----------------------------------------------------------
+Goal: Understand existing pipeline before making changes.
+
+Findings:
+- System has two datasets:
+  1. datasets/ransomware_dataset.csv (2000 rows, 51 columns,
+     header "Table S1") - appears to be supplementary data
+     from a published paper using Cuckoo Sandbox dynamic
+     analysis reports. Labels: G=1000, E=800, L=200.
+
+     UPDATE [2026-07-21]: user identified the source author as
+     "Herrera Silva". Verified via web search - CONFIRMED MATCH:
+
+     Herrera-Silva, J.A.; Hernandez-Alvarez, M. "Dynamic Feature
+     Dataset for Ransomware Detection Using Machine Learning
+     Algorithms." Sensors 2023, 23(3), 1053.
+     DOI: 10.3390/s23031053
+     PMCID: PMC9920393 / PMID: 36772092
+     Authors affiliated with Escuela Politecnica Nacional, Quito,
+     Ecuador. Published 2023-01-17.
+
+     Confirmed structural match (not just plausible - exact):
+     - 2000 total records (matches datasets/ransomware_dataset.csv
+       row count exactly)
+     - 50 selected characteristics, reduced from 326 initial
+       features (matches 51 columns = 50 features + "family" label)
+     - Three class labels G (Goodware) / E (Encryptor ransomware) /
+       L (Locker ransomware) - exact match to this project's labels
+     - Generated via 2000 sandboxed executions: 20 ransomware + 20
+       goodware samples, 10 executions per artifact, across 5
+       Windows platforms
+     - Feature categories: PROCMEMORY, EXTRACTED (scripts), NETWORK,
+       SIGNATURES (behavioral), STATIC (incl. entropy), BEHAVIOR
+       (libraries/registry), DEBUG - consistent with the Cuckoo
+       Sandbox-style column names observed in the raw file
+     - Original paper reports 10-fold cross-validation accuracies of
+       74-100% across Random Forest / Gradient Boosted Trees /
+       Gaussian Naive Bayes / Neural Networks - relevant baseline to
+       cite alongside this project's own XGBoost results, and a
+       precedent for using k-fold CV rather than a single split
+       (see task #8 cross-validation work).
+
+     BibTeX for the paper:
+       @article{herrera2023dynamic,
+         title={Dynamic Feature Dataset for Ransomware Detection
+           Using Machine Learning Algorithms},
+         author={Herrera-Silva, Juan A and Hern{\'a}ndez-{\'A}lvarez,
+           Myriam},
+         journal={Sensors},
+         volume={23},
+         number={3},
+         pages={1053},
+         year={2023},
+         publisher={MDPI},
+         doi={10.3390/s23031053}
+       }
+  2. datasets/balanced_dataset.csv (2869 rows, 12 columns) -
+     derived dataset used for the deployed model, combining
+     the practical 12-feature subset of the above with
+     datasets/normal_activity.csv (869 rows of real collected
+     Windows activity, produced by src/collect_normal_data.py).
+
+- Two training pipelines exist:
+  - src/preprocessing.py + src/train_xgboost.py: full 51-feature
+    pipeline (not the one used at inference time).
+  - src/train_practical_xgboost.py: 12-feature pipeline, trained
+    on balanced_dataset.csv. THIS is the one inference_engine.py
+    actually loads (models/practical_xgboost.pkl +
+    models/practical_scaler.pkl). Reported accuracy: 98.43%.
+
+- Live monitoring -> ML pipeline:
+  file_monitor.py / process_monitor.py / network_monitor.py /
+  registry_monitor.py -> event_collector.py ->
+  src/event_aggregator.py (30s window, 12 feature counters) ->
+  src/inference_engine.py (XGBoost classification + autoencoder
+  anomaly score) -> monitor/alert_system.py (CRITICAL/WARNING/INFO).
+
+- CRITICAL BUG FOUND (see bugs_debugs.txt #1): 3 of the 12
+  trained features (directory_enumerated, apistats, dll_loaded)
+  are never populated by any live monitor. Per
+  MALICIOUS_ACTIVITY_TRIGGERS.txt's own feature importance
+  table, these account for 21% + 17% + 3% = 41% of the
+  XGBoost model's decision weight. This is a strong candidate
+  root cause for false negatives in real-world deployment
+  despite the 98.43% offline test accuracy (that test set was
+  drawn from the same distribution as training, where these
+  features WERE populated).
+
+Decision: Prioritize fixing this before any retraining, since
+retraining without fixing collection would just re-fit to a
+feature distribution the live system can never produce.
+
+Next steps (see TODO list in this file, updated as work proceeds):
+1. Fix feature collection gaps (directory_enumerated, apistats,
+   dll_loaded).
+2. Audit remaining feature-semantics mismatches between training
+   data and live aggregation (e.g. file deletion handling).
+3. Retrain and re-evaluate against a live-shaped validation set.
+4. Review/complete prevention system (kept disabled by default).
+5. Light performance pass.
+
+(Entries below are appended chronologically as work is completed.)
+
+
+-----------------------------------------------------------
+[2026-07-21] Fixed feature collection gap (BUG #1, BUG #2)
+-----------------------------------------------------------
+What: Implemented live collection for directory_enumerated,
+apistats, and dll_loaded (previously always 0), and fixed the
+file-deletion mislabeling. Full technical detail in
+bugs_debugs.txt BUG #1 / BUG #2.
+
+Why this order: Retraining or threshold-tuning before fixing
+feature collection would have been pointless - any model trained
+would still receive a 41%-degraded feature vector at inference
+time. Collection had to be correct first.
+
+Design choice - proxies instead of true API hooking:
+The original dataset's apistats/directory_enumerated came from
+Cuckoo Sandbox's in-VM API hooking (true API call interception).
+Replicating that on a live Windows host would require kernel-level
+instrumentation (ETW consumer, minifilter driver) which is out of
+scope given the time crunch for this paper. Instead:
+  - apistats -> proxied by counting loaded cryptography-related
+    DLLs (advapi32.dll, bcrypt.dll, crypt32.dll, ncrypt.dll,
+    wintrust.dll) via psutil's memory_maps().
+  - directory_enumerated -> proxied by counting distinct parent
+    directories among a process's currently open files
+    (psutil.Process.open_files()).
+  - dll_loaded -> not a proxy, this is now a real, accurate count
+    (len(proc.memory_maps())).
+
+This is a deliberate, documented engineering trade-off appropriate
+for a research prototype: it moves these features from "always
+zero" (structurally blind) to "directionally meaningful" (present
+and correlated with the underlying suspicious behavior), which is
+a large improvement, while being honest that it is not a 1:1
+reproduction of the original Cuckoo signal. This asymmetry between
+training-time and live-time feature semantics is worth stating
+explicitly as a limitation in the paper - it's a genuine, defensible
+research finding, not just an implementation detail.
+
+Consequence for retraining (see task #4): Because the E/L
+(ransomware) rows in datasets/ransomware_dataset.csv /
+balanced_dataset.csv still hold true Cuckoo-hooked apistats and
+directory_enumerated values, and our live proxy cannot produce
+values on that same scale, retraining on the unchanged dataset
+means the model will still expect larger apistats/directory_enumerated
+values than the live system can realistically produce for these two
+features specifically. This is documented as a residual limitation.
+Two ways to fully close it (both out of scope for now, listed as
+future work): (a) implement real API hooking, or (b) regenerate
+ransomware training rows using the same proxy method used for
+normal_activity.csv so units match exactly on both sides.
+
+
+-----------------------------------------------------------
+[2026-07-21] Found and fixed a second, deeper bug in the same
+feature pipeline (BUG #3): birth-time-only sampling
+-----------------------------------------------------------
+While auditing for remaining false positive/negative sources
+(priority #3), pulled real per-class statistics from
+datasets/balanced_dataset.csv to sanity-check the BUG #1 fix
+against the actual training distribution (see bugs_debugs.txt
+BUG #3 for the full numbers). Finding: dll_loaded, apistats, and
+directory_enumerated are strongly discriminating features when
+populated (ransomware classes sit far above goodware on all three
+in the real training data), which confirmed BUG #1 was worth fixing
+- but also exposed that the original implementation only sampled a
+process ONCE, at the exact moment it was first observed, before it
+has typically loaded its own dependencies or opened any files. This
+would have made the BUG #1 fix nearly ineffective in practice for
+any ransomware running as a single long-lived process (which is the
+realistic case, not many short-lived child processes).
+
+Fixed by re-sampling every tracked process every poll cycle (2s) and
+emitting the delta since last cycle, so a process's behavior
+accumulates properly across the 30-second aggregation window instead
+of being frozen at its first instant. Full detail in bugs_debugs.txt
+BUG #3.
+
+Methodological note for the paper: this is a good example of why
+checking a fix against the *actual* training distribution (not just
+"is the code no longer hard-zero") matters - the first fix was
+technically correct but would have been empirically almost useless
+without this second pass. Worth a sentence in the paper's methodology
+or discussion section.
+
+Performance note: this trades some CPU (memory_maps()/open_files()
+calls now run every cycle for every tracked process, not just new
+ones) for correctness. Flagged for the performance pass (task #6) to
+revisit if it proves too costly on the target machine - candidate
+mitigations if needed: sample only processes with recent file/network
+activity, or increase the poll interval for the resampling pass
+specifically.
+
+
+-----------------------------------------------------------
+[2026-07-21] Decision point before retraining (task #4)
+-----------------------------------------------------------
+Status: PAUSED - awaiting user input, see chat.
+
+Before retraining, need to decide how to source the goodware
+(normal activity) side of the retraining data:
+
+Option A - Reprocess existing monitor/logs/events.csv (1.3 GB of
+real historical activity already collected on this machine) through
+the now-fixed src/collect_normal_data.py. Fast, uses only real data,
+but this log predates today's process_monitor.py changes, so it
+still has zero values for dll_loaded/apistats/directory_enumerated
+(those keys did not exist in event details when it was captured).
+Net effect: fixes the file-deletion mislabeling (BUG #2) and gives a
+much larger goodware sample count than the current 869-row
+normal_activity.csv, but does not give the retrained model any real
+live-shaped signal for the three BUG #1/#3 features on the goodware
+side specifically (it would still learn "goodware apistats = 0",
+which is directionally still reasonably safe as an assumption, just
+not empirically validated against fresh real data).
+
+Option B - Also run a short fresh monitoring session (some real
+minutes of normal computer use) with today's fixed process_monitor.py
+before retraining, to get real nonzero-but-low values for goodware on
+these three features, closing the loop properly. Requires the user's
+own machine time; cannot be fabricated without undermining the paper.
+
+Decision: asked the user directly rather than picking unilaterally,
+given the deadline pressure and that this is a real time-cost
+trade-off, not a code question. User deferred to my judgment; chose
+to reprocess the existing log now (fast, unblocks the paper timeline)
+and note a fresh short collection session as an optional follow-up
+rather than a blocker.
+
+
+-----------------------------------------------------------
+[2026-07-21] Reprocessing hit a scalability bug (BUG #4), fixed
+-----------------------------------------------------------
+First attempt to reprocess events.csv (1.3 GB) crashed with
+MemoryError - the script loaded every row into a Python list before
+doing any aggregation. Rewrote as a single streaming pass (see
+bugs_debugs.txt BUG #4) that only ever holds the current 30-second
+window's counts plus the list of already-closed window samples in
+memory, not the raw event stream. Also deduplicated the per-event
+feature-counting logic into one _apply_event_to_counts() helper
+(previously copy-pasted twice in the file, which is incidentally how
+BUG #2 existed in two places instead of one).
+
+Methodological note for the paper: this is a legitimate, citable
+engineering constraint worth a line in the paper - real-world
+continuous host monitoring produces event volumes that make
+naive "load it all into memory" preprocessing approaches
+non-viable, which is a genuine (if mundane) difference between
+academic sandbox-run datasets (one row per sample) and live
+telemetry-based ones (unbounded event streams that must be
+processed incrementally).
+
+
+-----------------------------------------------------------
+[2026-07-21] Wired up the prevention system (priority #4) (BUG #5)
+-----------------------------------------------------------
+Found src/prevention_system.py implements process termination,
+filesystem locking, network isolation, and Controlled Folder Access
+automation, but was dead code - never imported or called from
+anywhere except its own test block. CRITICAL alerts had no automated
+response path at all. Wired PreventionSystem into
+monitor/alert_system.py: AlertSystem now instantiates it and calls
+handle_critical_alert() whenever a CRITICAL alert fires. See
+bugs_debugs.txt BUG #5 for the exact change and the smoke test that
+confirmed it initializes correctly.
+
+Deliberately left prevention.enabled=false (config.json default,
+unchanged) - did NOT flip it on or exercise auto-terminate /
+network-isolation live, since those are destructive, machine-wide
+actions. That is the user's call to make and test explicitly on a
+machine/VM where a wrong termination or network drop is acceptable
+collateral, not something to do silently while working on the
+detection pipeline.
+
+Known remaining gap: PreventionSystem.check_early_warning_indicators()
+is also still dead code (defined, never called). Wiring it in would
+mean calling it once per aggregation window from
+monitor/start_monitoring.py and deciding what to do with returned
+warnings (e.g. a WARNING-level alert path separate from the ML
+classification path). Left as documented future work - the explicit
+ask was auto-termination/quarantine on CRITICAL alerts, which is now
+functional; early-warning heuristics are a smaller, separate feature.
+
+
+-----------------------------------------------------------
+[2026-07-21] Retrained both models on the fixed pipeline - full
+before/after comparison (task #2, #3, #4)
+-----------------------------------------------------------
+Steps taken (all previous models/datasets backed up first - see
+models/backup_pre_retrain_20260721/, datasets/*_backup_*.csv,
+autoencoder_results_backup_pre_retrain.csv):
+
+1. Replaced datasets/normal_activity.csv with the reprocessed,
+   bug-fixed version (914 windows vs previous 869; BUG #2's
+   deletion-mislabeling fix applied). Confirmed via direct inspection
+   that dll_loaded/apistats/directory_enumerated are 0 across all 914
+   rows, as expected - this historical log predates today's
+   process_monitor.py changes, so it could not contain real values
+   for those three (see BUG #1 caveat). A fresh short monitoring
+   session with today's code is still recommended as follow-up work
+   to get real live-shaped values for those three features on the
+   goodware side - not done in this session (time trade-off,
+   discussed with user).
+
+   Side observation worth a data-quality footnote in the paper: the
+   9.3M raw events collapsed into only 914 thirty-second windows,
+   and the density was extremely uneven (1.58M events within the
+   first 100 windows alone). A handful of windows have file_read in
+   the tens of thousands within 30 seconds - almost certainly bulk
+   I/O (e.g. antivirus scan, backup, or the monitor watching a busy
+   dev folder) rather than typical interactive use. These extreme
+   windows are consistent with the original dataset's own goodware
+   max (53338), so they were not filtered out - flagging this as an
+   observation, not a fix, since the original dataset already
+   contained equally extreme values.
+
+2. Regenerated datasets/balanced_dataset.csv via
+   src/collect_normal_data.py --merge:
+   Old: 2869 rows (G=1869, E=800, L=200)
+   New: 2914 rows (G=1914, E=800, L=200)
+
+3. Retrained models/practical_xgboost.pkl
+   (src/train_practical_xgboost.py):
+
+   Metric              Old (documented)   New (this session)
+   Accuracy            98.43%             98.28%
+   Precision (G)       0.98               0.97
+   Recall (G)          1.00               1.00
+   F1 (G)              0.99               0.99
+
+   New confusion matrix (rows=actual, cols=predicted, order E/G/L):
+     E: [150, 10, 0]   <- 10 of 160 E test samples misclassified as G
+     G: [0, 383, 0]    <- zero G misclassified as ransomware
+     L: [0, 0, 40]     <- perfect
+
+   New feature importance (top 3): directory_enumerated 31.2%,
+   file_created 13.8%, apistats 12.9% - notably directory_enumerated
+   and apistats (the two features fixed in BUG #1/#3) are now the
+   #1 and #3 most important features in the retrained model,
+   consistent with the paper's central claim that fixing their
+   collection matters. dll_loaded importance is lower (3.1%) than
+   the other two.
+
+   Honest read: essentially flat accuracy (98.43% -> 98.28%), with
+   the small change concentrated as a slight recall drop specifically
+   on the encryption-ransomware class (10 false negatives out of 160
+   in this split), while precision stayed perfect (1.00) for both
+   ransomware classes - meaning the retrained model did not become
+   more prone to crying wolf on goodware, it became marginally more
+   conservative about calling something ransomware. This is a
+   reasonable, defensible trade given the goal (fewer false alarms
+   on real users) and is well within normal fold-to-fold variance for
+   a dataset this size (2914 rows, 583-row test split) - would want
+   cross-validation, not a single split, to say anything statistically
+   stronger for the paper.
+
+4. Retrained models/autoencoder_model.keras + autoencoder_scaler.pkl
+   (src/train_autoencoder.py), 50 epochs, final val_loss 0.5191 (goodware-only, 1914
+   samples). Re-ran src/evaluate_autoencoder.py against
+   datasets/ransomware_dataset.csv (fixed reference set, not affected
+   by the goodware-data changes) for a fair before/after comparison:
+
+   Metric                       Old (documented)   New (this session)
+   Goodware avg recon. error    0.137              0.336
+   Ransomware avg recon. error  635-1373 (range)    E=593.85, L=1254.55
+   Best Suspicious-class F1     0.70               0.6216 (at 90th pct)
+
+   IMPORTANT: this shift in goodware error scale meant config.json's
+   anomaly_threshold (0.18, calibrated for the OLD autoencoder) was
+   now badly miscalibrated for the NEW one - see bugs_debugs.txt
+   BUG #6. Updated to 0.6955 (90th percentile of goodware error for
+   the new model, same calibration methodology as the original).
+   Without this fix, retraining the autoencoder alone would have
+   caused a flood of false CRITICAL "zero-day" alerts on ordinary
+   activity. This is arguably the most important single fix in this
+   session from a "would the system actually be usable" standpoint -
+   a paper section on "coupled thresholds must be recalibrated after
+   retraining" would be a legitimate, useful methodological point.
+
+   Honest read: the autoencoder's Suspicious-F1 dropped from 0.70 to
+   0.62 on this evaluation set. This is a real regression worth
+   investigating further if time allows - candidate causes to check
+   next: (a) the new goodware training set (914 windows, heavily
+   skewed by a few extreme-activity windows noted above) may be a
+   noisier/less representative distribution for the autoencoder to
+   learn "normal" from than whatever produced the original 0.137
+   baseline, (b) autoencoder architecture/epoch count were left
+   unchanged and may not be optimally tuned for the new data scale.
+   Not fixed in this session - documented as a known limitation and
+   candidate for further tuning before the paper's final numbers are
+   locked in.
+
+Overall assessment for the paper: the fixes in this session (BUG #1
+through #6) target CORRECTNESS of the deployed system (making live
+inputs actually match what the model expects) rather than raw
+offline benchmark accuracy, and offline accuracy alone does not
+capture that improvement - it was already high before (98.43%) partly
+because it was being measured in a self-consistent bubble that the
+live system could never actually produce as input. The more important
+claims to make in the paper are qualitative/architectural: 41% of the
+model's decision weight was unreachable in production before this
+session (BUG #1), a second-order sampling bug would have neutered
+even a naive fix (BUG #3), and a coupled threshold would have caused
+a false-alarm flood after any future retrain if not caught (BUG #6).
+These are the kind of findings a rigorous methodology section should
+highlight, arguably more valuable to the paper than the accuracy
+numbers themselves.
+
+
+-----------------------------------------------------------
+[2026-07-21] Performance pass (task #6) (BUG #7)
+-----------------------------------------------------------
+Scope: light-touch, given this was explicitly the lowest priority
+item and detection-accuracy work already consumed most of the
+session. Focused only on cost that this session itself introduced
+(the BUG #3 fix) plus one clear pre-existing inefficiency, rather
+than a broad performance audit.
+
+Two fixes in monitor/process_monitor.py, both detailed in
+bugs_debugs.txt BUG #7:
+  1. cpu_percent(interval=0.1) was blocking the poll loop 100ms per
+     newly-seen process, for a value (cpu_usage) that is never
+     actually read by the ML pipeline - only logged. Switched to the
+     non-blocking form.
+  2. The BUG #3 fix's per-cycle re-sampling of memory_maps()/
+     open_files() for every tracked process now runs every OTHER
+     poll cycle (~4s) instead of every cycle (~2s), halving that
+     cost while still giving ~7-8 delta samples per process across
+     a 30-second window - still far better than the original
+     once-at-birth sampling.
+
+Not done (explicitly out of scope given time budget): a live
+benchmarked run to measure actual CPU/latency improvement, and
+broader review of network_monitor.py/registry_monitor.py polling
+costs. If the paper needs a performance section, running the
+monitor for a fixed period before/after these two changes and
+comparing CPU% (e.g. via Task Manager or psutil.cpu_percent() on the
+python process itself) would produce a concrete number - flagged as
+a possible follow-up, not done here.
+
+
+===========================================================
+SESSION SUMMARY (2026-07-21)
+===========================================================
+Bugs found and fixed: 7 (see bugs_debugs.txt for full detail)
+  #1 CRITICAL - 3 of 12 trained features always zero in live use
+  #2 LOW-MED  - file deletions mislabeled as file creations
+  #3 HIGH     - BUG #1's fix only sampled once at process birth
+  #4 HIGH     - offline data pipeline crashed (MemoryError) on real-
+                sized event logs
+  #5 MEDIUM   - prevention system fully built but never called
+  #6 CRITICAL - stale anomaly threshold after autoencoder retrain
+                would have caused a false-alarm flood
+  #7 LOW-MED  - avoidable blocking calls / resampling cost
+
+Models retrained: XGBoost (98.43% -> 98.28%, honest read: flat, with
+a small E-class recall trade-off, zero new false positives) and
+Autoencoder (goodware error 0.137 -> 0.336; anomaly threshold
+recalibrated 0.18 -> 0.6955 to match; Suspicious-F1 0.70 -> 0.62,
+flagged as a real regression worth further investigation before
+paper numbers are finalized).
+
+Not done in this session (explicit trade-offs, not oversights):
+  - Fresh live data collection to get real (non-zero) goodware
+    values for apistats/directory_enumerated/dll_loaded - existing
+    reprocessed log could not provide this (predates the fix).
+  - Dashboard/web interface - explicitly deprioritized per user
+    given the time crunch.
+  - Wiring PreventionSystem.check_early_warning_indicators() (a
+    smaller, separate feature from auto-terminate/quarantine).
+  - Investigating the autoencoder F1 regression (0.70 -> 0.62)
+    further - candidate causes documented above, not root-caused.
+  - Live-testing prevention.enabled=true (auto-terminate, network
+    isolation) - destructive actions, left for the user to test
+    deliberately on an expendable machine/VM.
+
+All original models/datasets preserved under models/backup_pre_retrain_20260721/,
+datasets/*_backup_*.csv, and autoencoder_results_backup_pre_retrain.csv
+for reproducibility and before/after comparison in the paper.
+
+
+-----------------------------------------------------------
+[2026-07-21] Fresh live collection session + final retrain
+(the "recommended step" from the previous summary)
+-----------------------------------------------------------
+Ran a 20-minute non-interactive live monitoring session
+(scratchpad/collect_live_session.py) using TODAY's fixed
+process_monitor.py, to get real (non-zero) values for
+dll_loaded/apistats/directory_enumerated on the goodware side -
+the gap the earlier reprocessed-log retrain could not close (that
+log predates the fix).
+
+Setup note: main.py's monitoring loop prompts "Do you want to run
+the scan again? (y/n)" every 30s, which requires interactive stdin
+and would immediately hit EOFError and exit after one window when
+run non-interactively. Wrote a small standalone script that starts
+the same monitor threads directly with no prompts, runs for a fixed
+20-minute duration, then stops cleanly. Also discovered and
+installed a missing dependency (watchdog - listed in README.md's
+prerequisites but not present in this environment; python -m
+py_compile does not catch missing-import errors since it only
+compiles syntax, it does not execute import statements - this is
+why the gap wasn't caught by the compile checks run earlier in the
+session).
+
+Result: 310 real events collected over 20 minutes on this machine
+(modest volume - this was a quiet monitoring window, not heavy
+usage). Extracted just this new segment from the (still 1.3GB+)
+events.csv via a tail-read rather than reprocessing the whole file
+again. First extraction attempt via PowerShell Set-Content/
+Add-Content -Encoding utf8 silently added a UTF-8 BOM to the file,
+which corrupted the CSV header field name ("﻿timestamp" instead
+of "timestamp") and caused every single row to fail timestamp
+parsing (0 windows produced, silently - no crash, just empty
+output). Re-extracted using plain Python file I/O instead
+(no BOM). Reprocessed into 30 aggregated 30-second windows via
+src/collect_normal_data.py.
+
+Verified directly in the raw extracted event data that dll_loaded/
+apistats/directory_enumerated now contain real, non-zero, varied
+values (e.g. dll_loaded ranging ~24-227 per process-created event,
+some individual processes with very high loaded-module/memory-map
+counts) - confirming BUG #1's fix produces genuine live signal, not
+just non-crashing code.
+
+Data quality note: one aggregated window had dll_loaded=5166, far
+above anything in the original training distribution (ransomware E
+class max was 109). Very likely caused by the monitor observing a
+DLL/library-heavy process during this session (this machine was
+running Python + TensorFlow + pandas + sklearn processes at the
+time, which load unusually many shared libraries/memory-mapped
+regions). Left in the data rather than filtered out - it is genuine
+real activity, and filtering "inconvenient" real data points without
+a principled reason would be worse practice than reporting it
+honestly. Worth a sentence in the paper's limitations: the
+dll_loaded/apistats proxies can occasionally spike on legitimate
+heavy software (dev tools, ML/data-science workloads) in ways not
+represented in the original sandbox-derived training distribution.
+
+Merged: appended 30 new rows to normal_activity.csv (914 -> 944),
+regenerated balanced_dataset.csv (2914 -> 2944 rows: G=1944, E=800,
+L=200), retrained both models again (session-1 retrained models
+backed up to models/backup_session1_retrain/ first).
+
+FINAL XGBoost result:
+  Metric              Original    Session-1    Session-2 (FINAL)
+  Accuracy            98.43%      98.28%       98.30%
+  Confusion matrix (session-2, rows=actual E/G/L):
+    E: [151, 9, 0]   <- 9 of 160 misclassified as G (was 10 in session-1)
+    G: [1, 388, 0]   <- 1 of 389 misclassified as E (NEW - session-1 had 0)
+    L: [0, 0, 40]    <- perfect
+
+  New feature importance (top 3): directory_enumerated 23.2%,
+  apistats 13.8%, file_created 12.1% - the two BUG #1/#3 features
+  remain #1 and #2 in importance after adding real live data for
+  them, reinforcing that fixing their collection was the right
+  priority.
+
+  Honest read: accuracy is flat across all three versions (98.43 /
+  98.28 / 98.30) - within normal single-split noise for a ~2900-row
+  dataset. Session-2 traded one E-class false negative for one new
+  G-class false positive relative to session-1. Net: still no
+  systemic false-positive problem (1 in 389 goodware samples), but
+  it is the first false positive seen across any retrain in this
+  session, worth watching. Would want k-fold cross-validation, not a
+  single 80/20 split, before treating any of these small deltas as
+  meaningful for the paper - flagged again as a methodology
+  recommendation.
+
+FINAL Autoencoder result (evaluated against the fixed
+datasets/ransomware_dataset.csv reference set, unaffected by
+goodware-side changes):
+  Metric                       Original   Session-1   Session-2 (FINAL)
+  Goodware avg recon. error    0.137      0.336       0.4645
+  E avg recon. error           (635-1373 combined)     127.6
+  L avg recon. error           range      -            214.1
+  Best Suspicious-class F1     0.70       0.6216       0.7036
+
+  This F1 RECOVERED and slightly exceeded the original baseline
+  (0.6216 -> 0.7036), consistent with the report.txt hypothesis
+  written after session-1 that the regression was likely caused by
+  the noisy/incomplete goodware training data (869-914 windows
+  dominated by a few extreme-burst windows, zero signal on 3
+  features) rather than any fundamental problem with the retraining
+  approach. Adding 30 more real, feature-complete windows was enough
+  to recover and slightly improve performance versus the original
+  autoencoder - a genuinely positive, reportable result: real live
+  telemetry with correct feature collection measurably outperforms
+  both the original setup and the intermediate (feature-incomplete)
+  retrain, even in small quantity.
+
+  IMPORTANT (BUG #6 again): config.json anomaly_threshold updated a
+  second time, from 0.6955 (session-1 calibration) to 0.4306
+  (session-2's 90th percentile / best-F1 threshold). This is the
+  THIRD time this value has changed in one session as models were
+  retrained - strong empirical demonstration of the BUG #6 point
+  that this threshold is coupled to a specific model artifact and
+  must be recalibrated every time, not treated as a fixed constant.
+
+FINAL STATUS: the "fresh live collection" follow-up recommended at
+the end of the previous work session is now done. All three
+previously-broken features (BUG #1) have real, verified, non-zero
+values feeding both models. The autoencoder regression noted earlier
+is resolved.
+
+
+-----------------------------------------------------------
+[2026-07-21] 10-fold cross-validation (closes the recurring
+methodology caveat)
+-----------------------------------------------------------
+Wrote src/cross_validate_xgboost.py: stratified 10-fold CV on the
+final datasets/balanced_dataset.csv (2944 rows), scaler refit per
+fold (avoids leaking test-fold statistics into the scaler, which the
+single-split training script doesn't have to worry about). 10 folds
+chosen to match the source dataset paper's own methodology
+(Herrera-Silva & Hernandez-Alvarez report 10-fold CV results), which
+also makes this project's number directly comparable to theirs in
+the paper.
+
+RESULT (see cross_validation_results.txt for full output):
+  Mean accuracy: 97.96%  (std 0.68%, range 96.61%-98.98% across folds)
+  95% CI (normal approx): 97.54% - 98.38%
+
+  Per-class (mean +/- std across folds):
+    E: precision 0.9987, recall 0.9275, f1 0.9616
+    G: precision 0.9707, recall 0.9995, f1 0.9848
+    L: precision 1.0000, recall 0.9950, f1 0.9974
+
+  Aggregate confusion matrix (summed across all 10 folds' held-out
+  predictions, so every one of the 2944 rows appears exactly once as
+  a test example, order E/G/L):
+    E: [742,  58,   0]   <- 58/800 E samples (7.25%) misclassified as G
+    G: [  1, 1943,  0]   <- only 1/1944 G samples (0.05%) misclassified as E
+    L: [  0,   1, 199]   <- 199/200 correct
+
+This is a materially more trustworthy number than any of the three
+single-split results reported earlier (98.43% / 98.28% / 98.30%),
+and resolves the point raised after every retrain in this report:
+those single-split numbers were within normal fold-to-fold noise
+(here, std=0.68%, range spans ~2.4 points) and none of the small
+differences between them meant anything on their own. The mean CV
+accuracy (97.96%) is close to but slightly below all three single
+splits - unsurprising, since a single lucky split can land above the
+true mean.
+
+For the paper: this is the number to report as the headline accuracy
+figure, not any single train_test_split result. The recall gap on
+class E (92.75% vs near-100% for G and L) is the most honest
+"weakness" finding of the whole pipeline: consistently, roughly 1 in
+14 encryption-ransomware samples is missed. Combined with the near-
+perfect precision (99.87%) this describes a conservative model - it
+essentially never cries wolf on goodware, but it does have a real,
+consistent (not noise) miss rate on one ransomware subclass. That
+asymmetry (high precision, imperfect recall, specifically on class E)
+is worth a dedicated paragraph in the paper's results/limitations
+section, and is a legitimate direction for future work (e.g.
+class-weighting, threshold tuning per class, or targeted additional
+E-class training data).
+
+
+-----------------------------------------------------------
+[2026-07-21] Performance benchmark caught a critical regression
+(BUG #9) - fixed before writing performance claims into the paper
+-----------------------------------------------------------
+Ran a real benchmark (266 processes on this machine, matching how
+process_monitor.py actually queries them) instead of assuming BUG #7's
+frequency-only mitigation was sufficient. Result: a full resampling
+pass took ~52 SECONDS on average - 13-26x longer than the ~2-4s
+interval it was supposed to run within. Profiling isolated the cause
+to psutil.Process.open_files() (used only by directory_enumerated's
+proxy), which averages ~148ms/process on Windows vs ~18ms/process for
+memory_maps() (used by dll_loaded/apistats) - about 8x more expensive
+per call, because Windows has no cheap equivalent to Linux's
+/proc/pid/fd listing for enumerating open file handles.
+
+This would have been a severe, SILENT regression if shipped: the
+monitor would run without crashing or erroring, but would never
+actually keep its polling interval, starving new-process detection
+and defeating the entire point of BUG #3's continuous-resampling fix
+(potentially back down to ~0-1 samples per 30s window in practice,
+no better than the original bug). Full detail and the fix (removed
+open_files()/directory_enumerated from the continuous resampling
+loop entirely - it now only samples at process birth, same limitation
+as before BUG #3 for this one feature; widened the remaining
+dll_loaded/apistats resampling interval from BUG #7's guessed ~4s to
+a measured, headroom-safe ~8s; added a cost-free supplementary
+directory_enumerated signal from file_monitor.py's existing
+watchdog-based, event-driven file activity - distinct directories
+touched, which is free because file_monitor never polls) is in
+bugs_debugs.txt BUG #9.
+
+This is arguably the single most important methodological lesson from
+this entire session, worth its own paragraph or even a short
+subsection in the paper: a performance fix (BUG #7) that reduces call
+FREQUENCY without measuring the call's actual COST under realistic
+load can still leave the system fundamentally broken. The fix looked
+complete after BUG #7 (code review would not have caught this - it
+required running a benchmark against a real process count). Not
+retraining the models again for this fix - it only changes HOW LIVE
+DATA IS COLLECTED going forward (making the collection loop
+responsive again), not the meaning of any trained feature; the models
+retrained in the "final retrain" section above remain the ones to
+report in the paper.
+
+
+-----------------------------------------------------------
+[2026-07-21] 10-fold cross-validation script, prevention-system
+live test, early-warning wiring, and paper draft
+-----------------------------------------------------------
+Completed the remaining punch-list items from the previous summary:
+
+- src/cross_validate_xgboost.py: 10-fold stratified CV, results in
+  cross_validation_results.txt. See the dedicated CV section above.
+- Live-tested PreventionSystem.terminate_process() against a
+  disposable dummy process (PASS). Deliberately did NOT test
+  isolate_network() or lock_file_system() live - no safe way to
+  scope those to a throwaway target on a real machine. See
+  bugs_debugs.txt verification entry.
+- Wired PreventionSystem.check_early_warning_indicators() into
+  monitor/start_monitoring.py's scan loop (was the last piece of
+  BUG #5-related dead code). See bugs_debugs.txt follow-up entry.
+- Verified the dataset citation via web search: confirmed exact
+  match - Herrera-Silva, J.A.; Hernandez-Alvarez, M. "Dynamic
+  Feature Dataset for Ransomware Detection Using Machine Learning
+  Algorithms." Sensors 2023, 23(3), 1053. DOI: 10.3390/s23031053.
+  Full BibTeX entry added to the dataset section above.
+- Wrote a full paper draft: paper_draft/WatchRansom_Paper_Draft.docx.
+
+Paper draft tooling note: the docx skill's default approach uses
+Node.js (docx-js) with LibreOffice for render-verification: neither
+node nor soffice (LibreOffice) is installed in this environment.
+Used python-docx instead (installed via pip) to build the document,
+and verified it STRUCTURALLY (reopened the file, confirmed 30
+headings and 11 tables are present as expected) rather than
+visually rendering it to PDF/images, since no renderer was
+available. Recommend the user do one visual pass in Word to check
+table formatting/pagination looks right before using it, since it
+was not visually verified in this session.
+
+-----------------------------------------------------------
+[2026-07-21] Investigated the encryption-ransomware recall gap
+(92.75%) - two honest null results
+-----------------------------------------------------------
+User asked to "fix" the 92.75% class-E recall gap. Tried two standard,
+legitimate levers, both using the same 10-fold CV framework for a
+fair comparison against the documented baseline:
+
+1. Class-weighted training (sklearn compute_sample_weight('balanced')
+   passed to XGBoost.fit()): E recall moved from 92.75% to 92.87% -
+   a +0.12 percentage point change, well within the fold-to-fold
+   standard deviation (0.68-0.73%) already measured for this dataset.
+   Not a real effect - noise.
+
+2. Classification threshold sweep (the actual deployable knob in
+   config.json, currently 0.85): using out-of-fold predicted
+   probabilities from the same 10-fold CV, swept threshold from 0.85
+   down to 0.30. E recall moved from 92.50% to only 93.00% at the
+   MOST permissive threshold tested (0.30) - essentially flat across
+   the entire range, while goodware false-alarm rate stayed
+   negligible throughout (0.05% at worst).
+
+CONCLUSION: neither lever works, and this is itself an informative,
+reportable result. If the model's errors on class E were "borderline"
+cases sitting just under the 0.85 confidence threshold, lowering the
+threshold would have recovered many of them - it did not, even at a
+threshold as low as 0.30. This means the ~58/800 misclassified E
+samples are being classified as goodware with genuine (not
+marginal) confidence - the model isn't uncertain about them, it is
+confidently wrong. That points to a feature/data limitation (these
+particular E samples' behavioral signature genuinely resembles
+goodware in the current 12-feature representation) rather than a
+calibration problem, and is NOT fixable by adjusting weights or
+thresholds. Left as an honestly-reported limitation rather than
+forcing an illusory fix - this is more scientifically useful for the
+paper than a marginal-and-fake improvement would have been. Real
+fixes would require either more/different E-class training data or
+better features (e.g. real API hooking instead of the current
+apistats proxy - see BUG #1's caveat) - both flagged as future work.
+
+Scripts used (scratchpad, not added to the repo - single-purpose
+diagnostic experiments, not part of the shipped pipeline):
+try_class_weighting.py, threshold_sweep.py.
+
+
+-----------------------------------------------------------
+[2026-07-21] tree_command_line fix (BUG #10) and second live
+validation session
+-----------------------------------------------------------
+Fixed tree_command_line (see bugs_debugs.txt BUG #10) - same class of
+defect as BUG #1 (always zero in production), caught while writing
+the paper's limitations section. Cheap fix (process-ancestor-chain
+command-line length, using only lightweight psutil metadata calls,
+no per-cycle cost concern unlike BUG #9).
+
+Launched a second, longer (30-minute) live validation session with
+today's code (including the tree_command_line fix) to strengthen the
+live-validation evidence base. IMPORTANT CAVEAT: this is still the
+SAME machine as the first session - it adds more time/data diversity
+and validates the new tree_command_line fix, but does NOT close the
+"multi-machine/multi-user validation" gap raised as a limitation.
+That gap is honestly not closeable within this environment (no
+access to other machines) and remains documented as a real scope
+limitation for the paper, not something this session can fix.
+
+Paper draft content: title page, abstract, introduction, related
+work, dataset, system architecture, methodology, a dedicated
+"Implementation Findings" section built directly from bugs_debugs.txt
+(this is the paper's most novel contribution - the training-serving
+gap case study), full results (10-fold CV, autoencoder before/after,
+live validation, performance benchmark), discussion/limitations,
+future work, conclusion, references (with the verified citation),
+and an appendix with the full 9-bug table. Sections needing the
+user's own input are marked inline in the document in red italic
+text as "[DRAFT TODO: ...]" - notably: author name/affiliation,
+broader literature review beyond the one verified source, final
+discussion framing, and the conclusion's final wording. Everything
+else (methodology, implementation findings, all results tables) is
+filled in with real numbers and reasoning from this session's work,
+ready to use as-is or edit.
+
+
+-----------------------------------------------------------
+[2026-07-22] TRUE FINAL retrain: second live session merged,
+tree_command_line included, final numbers for the paper
+-----------------------------------------------------------
+The second live session (30 min, 828 raw events, 55 aggregated
+windows) completed. Verified tree_command_line has real non-zero
+values in the raw session data (e.g. 69, 1056, 1973) before
+proceeding - confirming BUG #10's fix works live, not just in the
+isolated smoke test.
+
+Merged: normal_activity.csv now 999 rows (944 prior + 55 new) ->
+balanced_dataset.csv now 2999 rows (G=1999, E=800, L=200).
+
+Retrained both models on this final dataset:
+
+XGBoost: 98.17% single-split accuracy (informal check only - see CV
+below for the number to actually report). tree_command_line now
+shows real importance (1.9%, up from 0.8% when it was zero-only data
+diluted by nothing - the value was previously reported from BEFORE
+this feature had any real signal at all, so 1.9% is the first
+meaningful measurement of this feature's importance).
+
+Autoencoder: retrained, re-evaluated against the fixed reference set:
+  Goodware avg error: 0.508 (up from 0.4645 in the previous retrain)
+  E avg error: 152.4, L avg error: 291.9
+  Best threshold: 95th percentile = 0.541678, F1 = 0.6069
+
+  HONEST NOTE: F1 dropped from 0.7036 (previous retrain) to 0.6069
+  here, despite MORE real live data being added. Not root-caused in
+  depth given time constraints, but the likely explanation follows
+  the same pattern already documented for the first large
+  reprocessed dataset: the second live session's event log shows a
+  burst late in the session (603->752->803 events in consecutive
+  60s report intervals, session log timestamps ~1571-1693s), meaning
+  some of the 55 new goodware windows likely have unusually high
+  event density. Adding higher-variance "goodware" windows can widen
+  the autoencoder's learned normal boundary, which mechanically
+  raises goodware reconstruction error and reduces separation from
+  the ransomware classes. This is a genuine, reportable finding for
+  the paper's discussion: naively adding more "real" data does not
+  monotonically improve a one-class anomaly detector if that data's
+  activity-density distribution is not representative/controlled -
+  data quality and consistency matter as much as quantity for this
+  specific model type. Flagged as future work: filter or separately
+  bucket high-burst windows rather than merging them
+  undifferentiated into the goodware training set.
+
+  config.json anomaly_threshold updated 0.4306 -> 0.541678 to match
+  (same BUG #6 discipline applied again - this is now the 3rd time
+  this coupling had to be re-fixed after a retrain in this project,
+  which itself supports the paper's point that this should be an
+  automated check, not a manual step someone has to remember).
+
+TRUE FINAL 10-fold cross-validation (this is the number to report in
+the paper, superseding all earlier CV/single-split numbers in this
+file):
+  Dataset: 2999 rows (G=1999, E=800, L=200)
+  Mean accuracy: 98.10% (std 0.62%, range 96.99%-99.00%)
+  95% CI: 97.72% - 98.48%
+  E: precision=100.00%, recall=93.00%, f1=96.36%
+  G: precision=97.23%, recall=100.00%, f1=98.60%
+  L: precision=100.00%, recall=99.50%, f1=99.74%
+  Aggregate confusion matrix (order E/G/L):
+    E: [744, 56, 0]
+    G: [0, 1999, 0]   <- ZERO goodware misclassified as ransomware
+                          across all 2999 rows, all 10 folds combined
+    L: [0, 1, 199]
+
+  This is a genuine, modest improvement over the previous CV result
+  (97.96% -> 98.10%; E recall 92.75% -> 93.00%; E precision 99.87% ->
+  100.00%; and for the first time, ZERO false positives on goodware
+  across the entire aggregated confusion matrix, not just 1). Comes
+  from a combination of more real live-collected goodware data and
+  the tree_command_line fix restoring the model's access to its full
+  intended 12-feature space for the first time in this project's
+  history.
+
+Paper draft (paper_draft/WatchRansom_Paper_Draft.docx) regenerated
+with these final numbers throughout - all results tables, the
+autoencoder before/after table (now 4 rows), feature importance
+table, and Section 8 discussion updated with the recall-investigation
+null results (class weighting, threshold sweep) and the new
+autoencoder-F1/data-quality finding above.
+
+
+-----------------------------------------------------------
+[2026-07-22] Autoencoder burst-filtering fix ATTEMPTED and REVERTED
+- correcting the paper's claim
+-----------------------------------------------------------
+User asked me to act on the burst-density hypothesis proposed in the
+previous entry (that a handful of extreme-activity goodware windows
+were widening the autoencoder's learned "normal" boundary and hurting
+F1). Implemented it: filtered the top 5% of goodware windows by total
+feature activity out of autoencoder training only. Retrained,
+re-evaluated.
+
+RESULT: F1 got WORSE (0.6069 -> 0.5811), not better. The hypothesis,
+while reasonable-sounding, was not supported by the experiment.
+REVERTED - restored the pre-filter autoencoder model/scaler from
+backup, confirmed via re-evaluation that numbers exactly match the
+prior (better) state, and removed the filtering code from
+src/train_autoencoder.py (left as a comment pointing to
+bugs_debugs.txt INVESTIGATION #11, so it isn't silently reintroduced
+by someone re-reading the same plausible reasoning later without
+knowing it was already tried and rejected). Did not ship a strictly
+worse model just because the reasoning behind it was plausible.
+
+CORRECTION TO THE PAPER DRAFT: the previous entry's report.txt text,
+and the paper draft generated from it (Section 7.2/8), stated the
+burst-density explanation as the "leading explanation" for the F1
+fluctuation across retrains. This is now known to be an insufficient
+or wrong explanation, or at least not fixable by the straightforward
+version of it tested here. Regenerating the paper draft with
+corrected language: the F1 fluctuation is real and reported, the
+burst-density hypothesis is reported as TESTED AND NOT CONFIRMED
+(not as an accepted explanation), and the true cause is stated as
+genuinely unknown / open future work. This is a good, honest example
+for the paper's own methodology: a plausible post-hoc explanation for
+a metric fluctuation should be tested before being written up as
+established, not just asserted because it sounds reasonable - exactly
+the standard this project has tried to hold its own model-development
+claims to throughout.
+
+Current deployed autoencoder is unchanged from the "TRUE FINAL
+retrain" entry above (G avg error 0.508, threshold 0.541678, F1
+0.6069) - this investigation did not change what is running, only
+ruled out one candidate explanation and added a code comment
+preventing the same untested idea from being silently reapplied.
+
+
+-----------------------------------------------------------
+[2026-07-22] Evaluation prep: please_study_this.txt,
+diagrams.txt, and a properly-formatted IEEE paper
+-----------------------------------------------------------
+Three deliverables, following the demo (which surfaced Finding #12,
+the process-monitor system-wide noise issue - see the demo-prep
+entries above):
+
+1. please_study_this.txt - comprehensive evaluation/viva prep
+   document: basics (signature vs behavioral detection, supervised
+   vs unsupervised learning, XGBoost, autoencoders, precision/recall/
+   F1, cross-validation, why StandardScaler), full tool/library list,
+   all 12 features explained, an honest "what did we actually
+   contribute vs what's third-party" section, final results, a
+   one-line-each summary of all 12 findings, the live demo
+   explanation, and a bank of likely professor questions with
+   answers - including, after the user asked for it explicitly, a
+   dedicated Q&A on why network isolation/filesystem-lock were never
+   tested (not even in a VM - only process termination was, and that
+   was on the host, not a VM) and why that is NOT a weakness in the
+   paper's central argument (prevention appears in zero results, one
+   of seven architecture components, one of six limitations
+   paragraphs, one of eight future-work bullets - detection is the
+   paper's entire empirical claim).
+
+2. diagrams.txt - a spec/checklist of every diagram the paper and
+   any presentation should have (architecture diagram, dual-model
+   decision flow, confusion matrix heatmap, feature importance chart,
+   a diagram of the AUDIT METHODOLOGY itself rather than a bug list,
+   reconstruction-error distribution, live-demo sequence diagram,
+   plus several optional ones), each with placement, purpose, and
+   style notes. Not generated as images yet - this is the planning
+   document; charts can be built directly from existing numbers on
+   request, architecture/flow diagrams need a diagramming tool or a
+   described layout.
+
+3. Rebuilt the IEEE paper from scratch (paper_draft/WatchRansom_IEEE_Paper.docx)
+   after the user flagged two real problems with the first attempt:
+
+   a) VISUAL FORMAT: the user supplied the actual IEEEtran conference
+      template (a PDF) as ground truth. Rebuilt to match: proper
+      title/single-column author block (multi-author grid, borderless
+      table layout, ordinal superscripts), two-column body via direct
+      OOXML section/column manipulation (python-docx has no native
+      column API), Roman-numeral centered section headings, italic
+      lettered subsections, "TABLE N" captions above tables in the
+      template's plain bordered black/white style (no colored
+      shading, unlike the first draft), Times New Roman throughout,
+      IEEE numbered reference style.
+
+   b) CONTENT/TONE: the user asked "do we even add bugs and all to
+      an IEEE paper?" - correctly identifying that the first draft's
+      "Bug #7, Severity: Low-Med" framing reads as an issue tracker,
+      not an academic paper, even though the underlying content (the
+      training-serving-gap findings) is legitimate and valuable
+      research material. RESTRUCTURED: removed all "Bug #N" /
+      severity-label framing entirely. The twelve findings are now
+      grouped into six thematic academic subsections under "IV.
+      Deployment Validation" (Feature Availability, Temporal Sampling
+      Behaviour, Threshold-Model Coupling, Computational Feasibility,
+      Data Pipeline Robustness, Response Mechanism Integration),
+      written as continuous formal prose, with one plain summary
+      table (Area / Finding / Resolution columns, no severity
+      column). The two negative-result investigations (autoencoder
+      burst-filter, class-weighting/threshold-sweep) moved into the
+      Results section as experimental findings, where they belong
+      methodologically, rather than living in the findings list.
+
+   Tone: user asked for the register used by Dr. Mohd Wazid (Graphic
+   Era University) and explicitly "not AI language." IMPORTANT
+   HONESTY NOTE: I do not have verified, reliable memory of that
+   specific researcher's exact prose from his papers, and did not
+   claim to reproduce it precisely - fabricating confidence in an
+   exact stylistic match would be worse than being upfront about the
+   limitation. What was actually done: wrote in the general formal
+   register common to IEEE security/networking papers of this type
+   (numbered contribution list in the introduction, "the remainder of
+   this paper is organized as follows" roadmap sentence, plain
+   declarative academic sentences, passive constructions where
+   standard, no first-person opinion framing, no contractions, and
+   deliberately avoided common AI-writing tics: no "leverage",
+   "seamless", "robust", "cutting-edge", "delve into"; minimal
+   transitional throat-clearing ("moreover", "it is worth noting");
+   no em-dash-heavy conversational asides; no rhetorical questions).
+   Recommend the user do one pass comparing against an actual Wazid
+   paper themselves and adjust phrasing if specific patterns don't
+   match closely enough - this was an approximation of the general
+   genre, not a verified reproduction of one author's idiolect.
+
+   Same tooling caveat as before applies: built with python-docx (no
+   Node/LibreOffice in this environment), verified structurally
+   (section/column XML, table count, paragraph order) but not
+   visually rendered - do one visual pass in Word before relying on
+   pagination/spacing looking correct.
+
+   The original (non-IEEE) paper_draft/WatchRansom_Paper_Draft.docx
+   was also updated for consistency (Finding #12 added, bug counts
+   corrected to reflect 12 total findings). CORRECTION: this was
+   initially claimed here before actually being verified - the
+   regeneration script was edited but its execution had been
+   interrupted, so the .docx on disk was briefly stale (still dated
+   before Finding #12 existed) while this file already claimed it
+   was current. Caught by checking file timestamps rather than
+   trusting the claim, then actually re-ran the generation script
+   (confirmed via updated file size/timestamp). Both documents now
+   genuinely agree on all facts and figures, though only the IEEE
+   version received the tone/structure rework, since the original
+   was never intended to be IEEE-formatted. Noted here as a reminder
+   to verify file state rather than assume a script edit implies the
+   corresponding output was regenerated.

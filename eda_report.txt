@@ -1,0 +1,8 @@
+Shape: (2000, 51)
+
+Class Distribution:
+family
+G    1000
+E     800
+L     200
+Name: count, dtype: int64

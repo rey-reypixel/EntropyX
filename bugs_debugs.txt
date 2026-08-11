@@ -1,0 +1,660 @@
+WATCHRANSOM - BUGS & FIXES LOG
+===========================================================
+Format per entry:
+  ID, Date found, Severity, Component
+  Description
+  Impact
+  Fix (or status if not yet fixed)
+===========================================================
+
+
+-----------------------------------------------------------
+BUG #1  [2026-07-21]  SEVERITY: CRITICAL  Component: monitor/*, src/event_aggregator.py
+-----------------------------------------------------------
+Description:
+  Three of the twelve features the XGBoost model was trained on
+  are never written to by any live monitor:
+    - directory_enumerated (file_monitor.py has no directory
+      enumeration detection at all)
+    - apistats (no monitor captures Windows API call statistics;
+      this field is Cuckoo-Sandbox-specific and has no live
+      analogue implemented)
+    - dll_loaded (process_monitor.py never puts "dll_loaded" into
+      the event details dict, so the
+      `if "dll_loaded" in details` branch in
+      event_aggregator.py's _update_feature_counts() never fires)
+
+Impact:
+  Per MALICIOUS_ACTIVITY_TRIGGERS.txt's feature importance table,
+  these three features carry 21% + 17% + 3% = 41% combined
+  importance in the trained model (directory_enumerated is the
+  single highest-importance feature). During live monitoring these
+  are structurally always 0, meaning the model only ever sees a
+  slice of the feature space it was trained on. This likely causes
+  false negatives (ransomware that relies on directory scanning /
+  API-detectable crypto calls may be under-scored) and skews the
+  decision boundary the model actually uses in production.
+
+Fix [2026-07-21]:
+  monitor/process_monitor.py: added three helper functions using
+  psutil, called for every newly observed process:
+    - _get_dll_loaded_count(proc): len(proc.memory_maps()) ->
+      real count of loaded modules/DLLs. Populates "dll_loaded".
+    - _get_crypto_api_proxy(proc): counts loaded modules matching
+      known crypto DLLs (advapi32.dll, bcrypt.dll,
+      bcryptprimitives.dll, crypt32.dll, ncrypt.dll, wintrust.dll).
+      Populates "apistats" as a PROXY, not a true API call count.
+    - _get_directory_enumerated_proxy(proc): counts distinct parent
+      directories among proc.open_files(). Populates
+      "directory_enumerated" as a PROXY for directory scanning
+      behavior.
+  These three values are now included in the process event's
+  details dict.
+
+  src/event_aggregator.py: _update_feature_counts() now reads
+  "apistats" and "directory_enumerated" from process event details
+  (dll_loaded handling already existed but was previously always
+  fed 0 since nothing supplied the key).
+
+IMPORTANT CAVEAT (for paper limitations section):
+  The original apistats/directory_enumerated values in
+  datasets/ransomware_dataset.csv come from Cuckoo Sandbox's
+  in-sandbox API hooking, which counts actual API call volume and
+  true directory traversal over a full sandboxed execution - a
+  fundamentally richer signal than what is obtainable from a
+  live host using only psutil (no kernel-level hooking/ETW).
+  The live proxies implemented here are directionally correlated
+  (a process loading crypto DLLs / touching many directories is
+  more suspicious) but are NOT on the same numeric scale as the
+  original training values for the E/L (ransomware) samples in
+  ransomware_dataset.csv, which were captured with true API
+  hooking. This means:
+    - The model, if retrained on the untouched balanced_dataset.csv,
+      still expects large apistats/directory_enumerated values for
+      ransomware (learned from Cuckoo data) that the live proxy may
+      not reach, likely UNDER-triggering on these two features
+      specifically, even though they are no longer hard-zero.
+    - Fully closing this gap would require either (a) real API
+      hooking (ETW consumer / minifilter driver - out of scope
+      given time constraints) or (b) re-collecting ransomware
+      training samples using the same live proxy method used for
+      normal_activity.csv, so train/live feature semantics match
+      exactly. Recommendation documented in report.txt as future
+      work / paper limitation.
+
+Status: FIXED (live proxy implemented) - see caveat above and
+report.txt for the accompanying methodology note. Feature is no
+longer hard-zero; residual scale-mismatch limitation documented.
+
+-----------------------------------------------------------
+BUG #2  [2026-07-21]  SEVERITY: LOW-MEDIUM  Component: src/event_aggregator.py
+-----------------------------------------------------------
+Description:
+  In _update_feature_counts(), a file "deleted" event increments
+  the file_created counter (with comment "Count as suspicious
+  creation"):
+      elif event_type == "deleted":
+          self.feature_counts["file_created"] += 1
+
+Impact:
+  Semantically mislabels deletions as creations. Ransomware that
+  deletes originals after encrypting elsewhere (or a locker that
+  deletes shadow copies) would inflate file_created without a
+  corresponding real file being created - conflates two distinct
+  behavioral signals the model was trained to distinguish.
+
+Fix [2026-07-21]:
+  Removed the mislabeled increment. "deleted" file events are no
+  longer added to any feature counter (there is no dedicated
+  deletion feature in the 12-feature schema, so mapping it to
+  file_created was actively wrong rather than merely imprecise).
+  Deletion events are still recorded in monitor/logs/events.csv
+  for audit/debugging purposes, just not fed into classification.
+
+Status: FIXED.
+
+-----------------------------------------------------------
+BUG #3  [2026-07-21]  SEVERITY: HIGH  Component: monitor/process_monitor.py
+-----------------------------------------------------------
+Description:
+  dll_loaded / apistats / directory_enumerated (added in the BUG #1
+  fix) were sampled exactly ONCE per process: at the instant
+  process_monitor first observes its pid (`if pid in seen_processes:
+  continue` meant every pid after its first sighting was skipped
+  forever). A newly-started process has typically not finished
+  loading its own DLLs and has not yet opened its target files at
+  that instant, so the sample tends to be near-zero regardless of
+  what the process goes on to do.
+
+Impact:
+  Ransomware in the training data is modeled as ONE process
+  performing many operations over the life of the sandbox run
+  (see distribution check below). A single point-in-time snapshot
+  taken at birth cannot reflect that. This would have silently
+  neutered most of the benefit of the BUG #1 fix for any ransomware
+  that runs as a single long-lived process rather than spawning many
+  child processes.
+
+  Distribution check run against datasets/balanced_dataset.csv
+  (2026-07-21) to confirm this mattered, by class (E=encryption
+  ransomware, L=locker, G=goodware):
+    apistats               mean          zero-rate
+      E (n=800):            110.8            7.0%
+      L (n=200):              64.2            0.0%
+      G (n=1869):             21.7           68.9%
+    directory_enumerated    mean          zero-rate
+      E:                     212.6           41.5%
+      L:                     240.1           70.0%
+      G:                       1.2           83.8%
+    dll_loaded              mean          zero-rate
+      E:                      20.2           14.8%
+      L:                       8.3           10.0%
+      G:                       5.6           74.3%
+  These are clearly discriminating features when populated with real
+  magnitude (ransomware classes sit far above goodware on all three).
+  A single birth-time snapshot would produce values near 0 almost
+  always, i.e. it would statistically resemble the goodware class
+  regardless of the process's true behavior - the opposite of what
+  we want.
+
+Fix [2026-07-21]:
+  monitor/process_monitor.py: `seen_processes` changed from a set to
+  a dict mapping pid -> last-observed (dll_loaded, apistats,
+  directory_enumerated) snapshot. Every poll cycle (every 2s), ALL
+  currently running tracked processes are re-sampled, not just new
+  ones:
+    - New pid -> emit "created" event as before (baseline snapshot
+      stored).
+    - Already-tracked pid -> recompute the three values, emit an
+      "activity" event carrying only the DELTA (increase) since the
+      last cycle, so cumulative growth in a long-lived process's
+      behavior is actually captured over a 30-second aggregation
+      window. Exited pids are pruned from the tracking dict each
+      cycle to avoid unbounded memory growth.
+
+  src/event_aggregator.py + src/collect_normal_data.py: proc_pid
+  increment is now gated to event_type == "created" only, so the new
+  "activity" events (which exist purely to carry delta values for
+  the three proxy features) do not inflate the process-count feature.
+
+Status: FIXED. Known remaining limitation: re-sampling memory_maps()
+and open_files() for every tracked process every 2 seconds adds CPU
+cost proportional to total process count - flagged for the
+performance-optimization pass (task #6 / see report.txt).
+
+-----------------------------------------------------------
+BUG #4  [2026-07-21]  SEVERITY: HIGH  Component: src/collect_normal_data.py
+-----------------------------------------------------------
+Description:
+  process_event_log_to_training_format() read the entire events.csv
+  into a Python list of dicts (`events.append(row)` for every row)
+  before doing anything else, then sorted and iterated it. On this
+  project's real monitor/logs/events.csv (1.3 GB from actual
+  monitoring sessions), this raised MemoryError - confirmed by
+  running it:
+    File "src\collect_normal_data.py", line 55, in
+    process_event_log_to_training_format
+      events.append(row)
+    MemoryError
+
+Impact:
+  Blocked retraining entirely - could not regenerate normal_activity.csv
+  from real collected data at all once the log grew past a few hundred
+  MB. Would only have "worked" on small demo logs, silently failing
+  the intended real-world use case.
+
+Fix [2026-07-21]:
+  Rewrote process_event_log_to_training_format() as a single
+  streaming pass: reads csv.DictReader row by row, maintains only the
+  current window's feature_counts dict and the (much smaller) list of
+  already-closed window samples in memory - never holds the full raw
+  event list. Relies on events.csv being append-only / chronologically
+  ordered, which holds because event_collector.py has a single writer
+  appending events as they occur. Extracted the per-event
+  feature-counting logic (previously duplicated twice in the file,
+  which is also how BUG #2 existed in two places) into one shared
+  _apply_event_to_counts() helper used by both the streaming loop and
+  (implicitly) kept consistent with src/event_aggregator.py's live
+  logic.
+
+Status: FIXED. Verified to run to completion (see report.txt for the
+resulting dataset stats).
+
+-----------------------------------------------------------
+BUG #5  [2026-07-21]  SEVERITY: MEDIUM  Component: monitor/alert_system.py, src/prevention_system.py
+-----------------------------------------------------------
+Description:
+  src/prevention_system.py implements a full PreventionSystem class
+  (process termination, filesystem lock, network isolation, early
+  warning checks, Controlled Folder Access) but was never imported or
+  instantiated anywhere else in the codebase. grep across all .py
+  files confirmed the only reference to PreventionSystem was inside
+  prevention_system.py's own `if __name__ == "__main__"` test block.
+  CRITICAL alerts went straight to logging/console with no automated
+  response path at all, despite config.json already having a full
+  "prevention" section (enabled: false) suggesting it was meant to be
+  wired in.
+
+Impact:
+  "Prevention" (auto-terminate/quarantine, priority #4 from the user)
+  did not functionally exist - config could be flipped to
+  prevention.enabled=true and nothing would change, since nothing
+  ever called into the class.
+
+Fix [2026-07-21]:
+  monitor/alert_system.py: AlertSystem.__init__ now imports and
+  instantiates PreventionSystem(self.config). AlertSystem.trigger_alert()
+  now calls prevention.handle_critical_alert(...) whenever a CRITICAL
+  alert fires, passing pid/process/label/confidence/message. Wrapped
+  in try/except so a prevention-system failure cannot crash alerting.
+
+  Confirmed via smoke test (instantiate AlertSystem() directly) that:
+    - Prevention System initialized (enabled: False)
+  i.e. it is now live in the call path but remains a complete no-op
+  because config.json's prevention.enabled is still false (default,
+  unchanged). Enabling it is a deliberate user decision documented in
+  report.txt - it was NOT flipped on or live-tested (auto-terminate/
+  network-isolation are destructive actions on a real machine and
+  were not exercised here).
+
+Status: FIXED (wired in, still safely disabled by default).
+
+-----------------------------------------------------------
+BUG #6  [2026-07-21]  SEVERITY: CRITICAL  Component: config.json, src/inference_engine.py
+-----------------------------------------------------------
+Description:
+  inference_engine.py's detect_anomaly() normalizes the autoencoder's
+  raw reconstruction error (MSE) into a 0-1 score via
+  `normalized_score = min(mse / anomaly_threshold, 1.0)`, where
+  anomaly_threshold comes from config.json ("ml.anomaly_threshold" =
+  0.18, calibrated per PROJECT_DOCUMENTATION.txt as "90th percentile
+  of goodware reconstruction errors" for the ORIGINAL autoencoder).
+  After retraining the autoencoder on the fixed dataset (task #4),
+  re-running src/evaluate_autoencoder.py against the same reference
+  set (datasets/ransomware_dataset.csv) showed the goodware
+  reconstruction error distribution shifted substantially:
+    Old autoencoder: goodware avg error 0.137 (per
+      PROJECT_DOCUMENTATION.txt)
+    New autoencoder: goodware avg error 0.336, 90th percentile 0.6955
+
+  config.json's anomaly_threshold was left at the OLD model's
+  calibration (0.18) after retraining.
+
+Impact (if left unfixed):
+  With threshold=0.18 and new goodware MSE averaging 0.336 (i.e.
+  already ~1.87x the threshold on average), most NORMAL activity
+  would produce normalized_score = min(mse/0.18, 1.0) = 1.0 for a
+  large fraction of goodware windows. alert_system.py treats
+  anomaly_score > 0.9 as CRITICAL and > 0.7 as WARNING - so simply
+  retraining the autoencoder without recalibrating this one config
+  value would have turned ordinary computer use into a flood of
+  CRITICAL "zero-day threat" false alarms. This is exactly the kind
+  of silent regression that is easy to miss because the code runs
+  without error - it just produces wrong results.
+
+Fix [2026-07-21]:
+  Updated config.json ml.anomaly_threshold from 0.18 to 0.6955,
+  using the same calibration methodology as the original (90th
+  percentile of goodware reconstruction error on the reference set),
+  taken directly from evaluate_autoencoder.py's own threshold-search
+  output for the new model, which also confirmed 90th percentile
+  gives the best Suspicious-class F1 (0.6216) among the percentiles
+  tested.
+
+Status: FIXED. IMPORTANT: any future re-training of the autoencoder
+(different data, different architecture, different epoch count) MUST
+be followed by re-running src/evaluate_autoencoder.py and updating
+config.json's anomaly_threshold to match - the two are coupled and
+this project has no automated check enforcing that. Worth flagging
+as a process/methodology point for the paper: threshold values tied
+to a specific model artifact should never be treated as a fixed
+constant that survives retraining unchanged.
+
+-----------------------------------------------------------
+BUG #7  [2026-07-21]  SEVERITY: LOW-MEDIUM (performance)  Component: monitor/process_monitor.py
+-----------------------------------------------------------
+Description (two related items):
+  (a) Pre-existing: `cpu_usage = proc.cpu_percent(interval=0.1)` was
+      called for every newly-observed process, BLOCKING the poll loop
+      for 100ms each time, serially. A burst of N new processes (e.g.
+      right after a reboot, or launching a suite of tools) added
+      N*100ms of pure wait to that single poll cycle. Checked whether
+      cpu_usage is actually used anywhere in classification -
+      event_aggregator.py's process-source handling only reads
+      command_line/arguments/dll_loaded/apistats/directory_enumerated;
+      cpu_usage and memory_usage are logged to events.csv only, never
+      consumed by the ML pipeline.
+  (b) Introduced by this session's BUG #3 fix: re-sampling
+      memory_maps() + open_files() for every already-tracked process
+      every single 2-second poll cycle scales linearly with total
+      process count and adds real, continuous CPU cost for the
+      lifetime of a monitoring session.
+
+Impact:
+  (a) Pure wasted latency for a value the model never sees.
+  (b) A necessary trade-off from the BUG #3 correctness fix, but
+      worth trimming since it runs continuously for the entire
+      monitoring session, not just once.
+
+Fix [2026-07-21]:
+  (a) Changed to `proc.cpu_percent(interval=None)` (non-blocking;
+      may report 0.0 more often since it has no forced sampling
+      window, acceptable given the value is informational-only).
+  (b) Added a cycle counter; the expensive re-sampling of
+      already-tracked processes now runs every OTHER poll cycle
+      (~every 4s) instead of every cycle (~every 2s), halving that
+      cost. New-process detection (which must not be delayed) still
+      runs every cycle unconditionally. At ~4s resampling cadence,
+      a 30-second aggregation window still gets ~7-8 delta samples
+      per tracked process, which is still a large improvement over
+      the original single-sample-at-birth behavior (BUG #3) while
+      being materially cheaper.
+
+Status: FIXED (both). Not benchmarked on a live long-running session
+in this pass (would require an actual extended monitoring run, which
+was out of scope for this session - see report.txt decision on data
+collection). If CPU usage still proves too high in real use, further
+options documented as follow-up: skip resampling for a denylist of
+very high-count idle system processes, or make the resample interval
+configurable via config.json instead of hardcoded.
+
+-----------------------------------------------------------
+BUG #8  [2026-07-21]  SEVERITY: LOW (tooling, not project code)  Component: extraction tooling only
+-----------------------------------------------------------
+Description:
+  While extracting a small segment of new events from events.csv for
+  reprocessing, used PowerShell's `Set-Content -Encoding utf8` /
+  `Add-Content -Encoding utf8` to write the extracted file. Windows
+  PowerShell 5.1's "utf8" encoding writes a UTF-8 byte-order-mark
+  (BOM) at the start of the file. This silently changed the CSV
+  header's first field name from "timestamp" to "﻿timestamp"
+  (an invisible extra character prepended).
+
+Impact:
+  src/collect_normal_data.py's csv.DictReader then could not find a
+  "timestamp" key in any row (KeyError, caught by the existing
+  try/except and counted as a skipped/unparseable row) - ALL 320
+  rows were silently skipped, producing "0 windows" with no crash
+  and only a generic warning count, not an obviously-wrong error
+  message. Easy to miss if the row-skip count isn't checked.
+
+Fix:
+  Re-did the extraction using plain Python file I/O
+  (open(...encoding='utf-8', newline='')) instead of PowerShell's
+  Set-Content/Add-Content, which does not add a BOM.
+
+Status: FIXED (tooling only - no project source file was affected;
+this was purely in how a temporary intermediate file was created
+during this session's data-collection step). Documented because it
+is a realistic, easy-to-hit gotcha for anyone reprocessing this
+project's CSV logs on Windows via PowerShell, and because the
+failure mode (silent 0-rows-parsed rather than a loud error) is
+exactly the kind of thing worth watching for when reprocessing data
+for the paper's later experiments.
+
+-----------------------------------------------------------
+FOLLOW-UP to BUG #5  [2026-07-21]  Component: monitor/start_monitoring.py
+-----------------------------------------------------------
+Wired PreventionSystem.check_early_warning_indicators() into the main
+scan loop in monitor/start_monitoring.py - it was the one remaining
+piece of dead code noted as a known gap after BUG #5's fix. Called
+once per 30-second scan window, BEFORE inference_engine.classify_aggregated()
+runs (that call resets the aggregation window at its end, so the
+early-warning check has to see the window's features first). Runs
+independently of prevention.enabled (early-warning is read-only/
+non-destructive - it only inspects the aggregator's current counts
+against fixed thresholds, never touches processes/filesystem/network),
+gated only by prevention.early_warning_detection (true by default in
+config.json). When triggered, prints to console and logs a WARNING-level
+alert via the existing alert_system so it is captured in alerts.csv/
+alerts.json like any other alert.
+
+Smoke-tested: monitor/start_monitoring.py imports and initializes
+without error with the new wiring in place.
+
+Status: FIXED (was the last item on the "not done" list from the
+previous session's prevention-system work).
+
+-----------------------------------------------------------
+VERIFICATION [2026-07-21]  Component: src/prevention_system.py
+-----------------------------------------------------------
+Live-tested PreventionSystem.terminate_process() against a dummy
+throwaway process (a `python -c "time.sleep(300)"` child spawned
+solely for this test, PID logged and confirmed killed within 1
+second of the call). Test used an in-memory config dict with
+prevention.enabled=True passed directly to a standalone
+PreventionSystem instance - the real config.json on disk was NOT
+modified and remains prevention.enabled=false. Result: PASS -
+terminate_process() correctly identified, terminated, and confirmed
+death of the target process; returned True.
+
+Deliberately NOT live-tested: isolate_network() (calls `netsh
+interface set interface * disable` - would disable this machine's
+real network adapters, a destructive and hard-to-reverse action with
+no scoped/dummy equivalent to test against) and lock_file_system()
+(recursively chmods real directories - risky if given the wrong path,
+and again has no safe dummy target that would meaningfully validate
+the real code path against real user directories). These two remain
+implemented but unexercised in this session. Recommend the user test
+them deliberately on an expendable VM or sandboxed folder before
+relying on them, not as part of routine development work on a real
+machine.
+
+-----------------------------------------------------------
+BUG #9  [2026-07-21]  SEVERITY: CRITICAL  Component: monitor/process_monitor.py
+-----------------------------------------------------------
+Description:
+  BUG #7's performance pass reduced the frequency of the BUG #3 fix's
+  continuous resampling (dll_loaded/apistats/directory_enumerated for
+  every tracked process) but never actually measured whether the
+  resulting cost fit within its own interval. Running a proper
+  benchmark (as part of the "benchmark performance" follow-up task)
+  revealed it did not, by a wide margin:
+
+    Processes on this machine: 266
+    Bare process_iter() pass:        ~2.2s
+    Full resample pass (all 3 proxies, memory_maps()+open_files()
+      per process):                  ~52s average (range 43.5-56.2s)
+
+  Profiling isolated the cause: psutil.Process.open_files() (used
+  only by directory_enumerated's proxy) averages ~148ms/process on
+  Windows, vs ~18ms/process for memory_maps() (used by dll_loaded and
+  apistats) - roughly 8x more expensive per call. open_files() is
+  inherently costly on Windows because it must enumerate and resolve
+  every file handle a process owns, unlike Linux's cheap /proc/pid/fd
+  directory listing.
+
+Impact:
+  A resampling pass taking ~52s against a 2s (or even BUG #7's
+  widened ~4s) poll interval means the process-monitor loop could
+  never actually keep its interval - each "cycle" would in practice
+  take ~52+ seconds end to end, starving new-process detection and
+  meaning far FEWER delta samples per 30-second aggregation window
+  than BUG #3's fix intended (potentially 0-1 samples per window in
+  practice, similar to or worse than the original once-at-birth
+  problem BUG #3 was fixing). This would have been a severe,
+  silent regression: the system would still run without crashing,
+  logs would still be produced, but real-time responsiveness would be
+  effectively broken, undermining BUG #1/#3's entire premise. Caught
+  only because performance was actually benchmarked with a realistic
+  process count on a real machine, rather than assumed to be "probably
+  fine" after a frequency-only mitigation (BUG #7).
+
+Fix [2026-07-21]:
+  1. Removed directory_enumerated / open_files() entirely from the
+     continuous per-cycle resampling loop. It now ONLY samples once,
+     at process creation (reverting to the BUG #3-identified
+     limitation for this ONE feature specifically - accepted as the
+     honest trade-off given the hard, measured cost constraint).
+  2. dll_loaded and apistats (both backed by the much cheaper
+     memory_maps()) remain on continuous resampling, but the interval
+     widened from every-other-cycle (~4s, BUG #7) to every-4th-cycle
+     (~8s), based on the actual measured cost (~4.7s for a
+     memory_maps()-only pass across 266 processes) rather than a
+     guess - leaves comfortable headroom (~8s budget vs ~6.9s
+     worst-case combined with process_iter()'s own ~2.2s).
+  3. Added a second, COST-FREE source for directory_enumerated:
+     monitor/file_monitor.py now tracks distinct directories touched
+     by real (watchdog, event-driven, non-polling) file activity
+     within the monitored folder, and flags "new_directory" in event
+     details the first time a directory is touched in a session.
+     src/event_aggregator.py and src/collect_normal_data.py's
+     _apply_event_to_counts() both updated to increment
+     directory_enumerated from this signal. This is philosophically a
+     good fit anyway: ransomware scanning/enumerating directories
+     WITHIN a protected folder is exactly the reconnaissance pattern
+     this feature is meant to catch, and it costs nothing extra since
+     file_monitor is already event-driven.
+
+  Post-fix benchmark (same machine, 269 processes):
+     memory_maps()-only pass (dll_loaded+apistats): mean 5.67s
+     (range 5.51-5.77s) - comfortably fits the 8s budget (was 52s
+     before the fix, a ~9x reduction). directory_enumerated no longer
+     contributes to per-cycle resampling cost at all (samples once at
+     process birth only, plus the free file_monitor.py-based signal).
+
+Status: FIXED. This is the clearest example in the whole session of
+why "add a fix" and "benchmark the fix under realistic load" are two
+different steps - BUG #7 without this follow-up would have shipped a
+monitor that silently could not keep up with its own polling
+interval. Worth a dedicated paragraph in the paper: performance claims
+for a live monitoring system must be validated against real process
+counts, not assumed from the size of the code change.
+
+-----------------------------------------------------------
+BUG #10  [2026-07-21]  SEVERITY: LOW  Component: monitor/process_monitor.py
+-----------------------------------------------------------
+Description:
+  tree_command_line - one of the 12 trained features - was never
+  populated by any live monitor, same class of defect as BUG #1
+  (feature always zero in production despite being part of the
+  trained feature vector). Lower severity than BUG #1 because this
+  feature carries the lowest importance of the 12 (0.8%, per the
+  final retrain's feature importance ranking) - found while writing
+  the paper's limitations section, not during the original BUG #1
+  audit.
+
+Fix [2026-07-21]:
+  Added _get_tree_command_line_length(proc) to process_monitor.py:
+  walks up a newly-created process's ancestor chain (parent,
+  grandparent, ... up to MAX_TREE_DEPTH=5 levels) via
+  psutil.Process.parent()/.cmdline(), summing command-line character
+  length across the chain. Uses only cheap process-metadata lookups
+  (no memory_maps()/open_files()), so - unlike directory_enumerated
+  (BUG #9) - there is no per-cycle cost concern; only computed once
+  at process creation, same as the existing command_line feature.
+  event_aggregator.py and collect_normal_data.py's
+  _apply_event_to_counts() both updated to read "tree_command_line"
+  from process "created" event details.
+
+  Smoke-tested directly: returned a real, non-zero value (2101, for
+  the current Python process's own ancestor chain at test time).
+
+Status: FIXED (collection) AND retrained/validated [2026-07-22]. A
+second 30-minute live session confirmed real non-zero
+tree_command_line values in raw collected data (e.g. 69, 1056, 1973),
+was merged into the training set, and the model was retrained.
+tree_command_line now shows real, non-trivial feature importance
+(1.9%) for the first time in this project's history - previously any
+"importance" figure for this feature was meaningless since its input
+was always zero. See report.txt's "TRUE FINAL retrain" entry for full
+before/after numbers.
+
+-----------------------------------------------------------
+INVESTIGATION #11  [2026-07-22]  Component: src/train_autoencoder.py
+-----------------------------------------------------------
+Description:
+  Attempted fix for the autoencoder F1 fluctuation noted in report.txt
+  (0.70 -> 0.62 -> 0.70 -> 0.61 across four retrains). Hypothesis:
+  goodware training windows have a heavily bimodal total-activity
+  distribution (median 99 events/window, but a top ~5% of windows
+  with 44,500+ events, up to 82,177) - a few extreme bursts (bulk
+  file ops, AV/indexing scans) alongside overwhelmingly quiet typical
+  activity. Reasoned that including these bursts in the ONE-CLASS
+  autoencoder's training data (unlike the supervised XGBoost
+  classifier, which can reasonably use the full range) would widen
+  its learned "normal" boundary and reduce separation from
+  ransomware-scale reconstruction error.
+
+Fix attempted:
+  Added burst filtering to train_autoencoder.py: excluded the top 5%
+  of goodware windows by total feature activity (threshold 41,137;
+  excluded 100/1999 windows) before autoencoder training only.
+  Retrained and re-evaluated against the fixed reference set.
+
+RESULT: THE HYPOTHESIS WAS WRONG. F1 got WORSE, not better:
+  Before filtering: G avg error 0.508, best F1 = 0.6069 (threshold
+    0.541678)
+  After filtering:  G avg error 0.411, best F1 = 0.5811 (threshold
+    0.815509)
+  Both G and E/L average reconstruction error dropped (as expected -
+  a tighter, lower-activity-only goodware baseline reconstructs
+  itself more easily), but the RATIO/separation that F1 depends on
+  got worse, not better, contrary to the hypothesis.
+
+Action taken: REVERTED. Restored the pre-filter autoencoder model and
+scaler from backup (models/backup_pre_burst_filter_20260722/), and
+confirmed via re-evaluation that reconstruction error and F1 exactly
+match the previous (better) numbers. config.json's anomaly_threshold
+left at 0.541678, correct for the reverted (currently active) model -
+did NOT ship the strictly-worse burst-filtered model just because the
+reasoning behind it sounded plausible.
+
+Status: HONEST NEGATIVE RESULT. The burst-density hypothesis for the
+F1 fluctuation is not supported by this experiment and should not be
+stated as an established explanation in the paper - see report.txt
+for the corrected framing. The true cause of the F1 fluctuation
+across retrains remains uninvestigated/unknown; this rules out one
+plausible-sounding explanation rather than confirming it. Left as
+open future work rather than forcing a fix that doesn't hold up
+empirically.
+
+-----------------------------------------------------------
+FINDING #12  [2026-07-22]  SEVERITY: MEDIUM  Component: monitor/process_monitor.py
+-----------------------------------------------------------
+Description:
+  Discovered while building and end-to-end testing a demo attack
+  simulator (demo/simulate_ransomware_behavior.py). process_monitor.py
+  is system-wide (scans ALL processes on the machine via
+  psutil.process_iter(), not scoped to the monitored folder). This
+  means the WatchRansom monitoring process ITSELF (which loads
+  TensorFlow/XGBoost/scikit-learn to run inference) is tracked as
+  just another process, and its own dll_loaded count (thousands of
+  shared library handles from those heavy ML libraries) gets folded
+  into the same aggregated feature vector used to classify the
+  window. Observed dll_loaded=11125 and apistats=477 in a real test
+  window - both 100x+ beyond anything in the training data (E-class
+  max dll_loaded was 109; E-class max apistats was 1671). Any other
+  heavy process running on the machine during a scan window
+  (browsers, IDEs, other Python/ML processes) would contribute the
+  same kind of noise.
+
+Impact:
+  In live end-to-end testing (3 runs, see demo/DEMO_RUNBOOK.md), this
+  out-of-distribution dll_loaded/apistats noise caused the XGBoost
+  classifier to output "G" (goodware) even during an active simulated
+  attack with a realistic file_read/file_created signature (951/400,
+  close to E-class training means). The classifier had never seen
+  values anywhere near this scale for ANY class, so its behavior on
+  such an input is effectively undefined rather than a real judgment.
+  The autoencoder was NOT confused by this in the same tests (fired
+  CRITICAL/anomaly_score=1.0 reliably all 3 times) - plausibly because
+  reconstruction error scales differently than a tree-based
+  classifier's learned splits do for wildly out-of-range single
+  features, though this is not rigorously confirmed.
+
+Status: NOT FIXED - documented, not remediated, due to the time
+constraint of preparing a same-day live demo. A real fix would
+require either (a) scoping dll_loaded/apistats sampling to exclude
+the monitoring process's own pid (and ideally other known-heavy
+non-target processes), or (b) clipping/winsorizing extreme feature
+values before scaling so single-feature outliers cannot dominate
+classification. Recommend (a) as the more principled fix - added to
+report.txt future work. Practical mitigation used for the demo
+instead: rely on the autoencoder's independent anomaly-detection path
+(reliable in testing) and narrate the classifier's behavior honestly
+as a live illustration of the training-serving gap theme rather than
+hiding or working around it.
+
+===========================================================
+(Further entries appended as work proceeds.)

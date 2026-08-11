@@ -1,0 +1,199 @@
+WATCHRANSOM - DIAGRAMS NEEDED FOR THE PAPER / PRESENTATION
+=================================================================
+Every diagram this project should have, what it shows, why it's
+needed, and where it belongs. None of these are auto-generated
+yet - this is the spec/checklist. Ask separately to have any of
+these actually produced (several can be built directly as charts;
+architecture/flow diagrams are best drawn by hand or in a tool like
+draw.io / PowerPoint for full control over the final paper figure).
+=================================================================
+
+
+REQUIRED (paper will look incomplete without these)
+-------------------------------------------------------------
+
+1. SYSTEM ARCHITECTURE DIAGRAM
+   Placement: Section on System Architecture / Proposed Methodology
+   Shows: the full pipeline as boxes and arrows - the four monitors
+   (File, Process, Network, Registry) feeding into the Event
+   Collector, which feeds the Event Aggregator (30-second window),
+   which feeds the Inference Engine (branching into two parallel
+   paths: XGBoost Classifier and Autoencoder), which feeds the Alert
+   System (with its CRITICAL/WARNING/INFO branching), which
+   optionally feeds the Prevention System.
+   Why: this is THE figure every reader needs first to understand
+   what the system even is. Standard for any systems paper.
+   Style notes: label each arrow with what flows along it (e.g.
+   "raw events", "12-feature vector", "classification + anomaly
+   score"). Keep it black/white or grayscale for IEEE print
+   compatibility. Should be Fig. 1.
+
+2. DUAL-MODEL DECISION FLOW DIAGRAM
+   Placement: Methodology, describing the classification/anomaly
+   logic, OR merged into Fig. 1 as a zoomed inset
+   Shows: the SAME 12-feature vector going into two independent
+   models (XGBoost -> label + confidence; Autoencoder ->
+   reconstruction error -> normalized anomaly score), then both
+   outputs feeding into the threshold logic (critical_threshold=0.85
+   for classifier, anomaly thresholds for the autoencoder) that
+   produces the final CRITICAL/WARNING/INFO alert level.
+   Why: this is the paper's core design idea (defense-in-depth via
+   two independent detection paths) and needs its own clear visual,
+   distinct from the system architecture - readers should be able to
+   see this figure alone and understand why two models are used.
+
+3. CONFUSION MATRIX HEATMAP (XGBoost, final 10-fold CV result)
+   Placement: Results section, next to Table V/VI
+   Shows: the 3x3 aggregate confusion matrix (E/G/L actual x
+   predicted) as a color-graded heatmap, values:
+     E: [744, 56, 0]
+     G: [0, 1999, 0]
+     L: [0, 1, 199]
+   Why: reviewers/professors read a heatmap faster than a table -
+   the near-perfect diagonal with the one visible off-diagonal
+   cluster (56 E->G misclassifications) tells the whole recall-gap
+   story in one glance. Easy to generate directly from the numbers
+   (matplotlib/seaborn confusion matrix heatmap, or the mcp
+   visualize/artifact tool here can produce one on request).
+
+4. FEATURE IMPORTANCE BAR CHART
+   Placement: Results section, next to Table VII
+   Shows: horizontal bar chart of all 12 features ranked by XGBoost
+   importance (directory_enumerated 27.4% down to tree_command_line
+   1.9%). Consider color-coding or annotating the three bars that
+   correspond to Bug #1's originally-broken features
+   (directory_enumerated, apistats, dll_loaded) to visually reinforce
+   the paper's central claim that fixing their collection mattered.
+   Why: makes the "top features are the ones we fixed" argument
+   visually obvious instead of requiring the reader to cross-
+   reference a table against prose.
+
+REQUIRED (specific to this paper's own findings/argument)
+-------------------------------------------------------------
+
+5. TRAINING-SERVING GAP TIMELINE / AUDIT FLOW DIAGRAM
+   Placement: Beginning of the Implementation/Deployment Validation
+   section
+   Shows: NOT a bug list - a process diagram of the AUDIT
+   METHODOLOGY itself: "Trained Model (98%+ offline accuracy)" as a
+   starting box, branching into a "Trace every feature to its live
+   data source" step, which finds "3/12 features always zero" ->
+   "Fix collection" -> "Check against real training distribution"
+   -> "Fix still insufficient (birth-time sampling)" -> "Benchmark
+   under realistic load" -> "Performance regression found" -> "Fix
+   validated". This is a diagram of the METHOD (a repeatable process
+   other researchers could apply to their own systems), which is a
+   more citable, reusable contribution than a list of specific bugs.
+   Why: this is the paper's most novel methodological contribution
+   and deserves a diagram that generalizes it beyond "here is what
+   went wrong in our specific code."
+
+6. RECONSTRUCTION ERROR DISTRIBUTION (Autoencoder)
+   Placement: Results section, autoencoder subsection
+   Shows: overlapping histograms or box plots of reconstruction
+   error for G vs E vs L classes (log scale recommended - G averages
+   0.508, E averages 152.4, L averages 291.9, several orders of
+   magnitude apart). Mark the chosen threshold (0.541678) as a
+   vertical line.
+   Why: visually demonstrates WHY the autoencoder anomaly path
+   works (the classes are separated by orders of magnitude even
+   though the threshold F1 is modest at 0.6069) - the diagram
+   explains the number better than prose alone can.
+
+7. LIVE DEMONSTRATION SEQUENCE DIAGRAM
+   Placement: Results section, live demonstration finding (Bug #12)
+   subsection
+   Shows: a simple timeline/sequence diagram: t=0 monitor starts ->
+   t=3s attack simulator launches -> t=3-30s file operations occur
+   (with dll_loaded/apistats climbing due to system noise, shown as
+   an annotation) -> t=30s classification runs -> two parallel
+   outcomes shown side by side: "XGBoost -> Goodware (confused by
+   noise)" and "Autoencoder -> CRITICAL (anomaly=1.0)".
+   Why: this is a genuinely interesting, unscripted finding and a
+   sequence diagram communicates the "two models, two different
+   outcomes, same attack" story better than a table of numbers.
+
+
+USEFUL BUT OPTIONAL (nice to have, not essential)
+-------------------------------------------------------------
+
+8. DATASET COMPOSITION CHART
+   Placement: Dataset section
+   Shows: simple stacked/grouped bar or pie chart of the final
+   2,999-row dataset by class (G=1999/E=800/L=200) and by source
+   (original sandboxed data vs the three rounds of live-collected
+   goodware telemetry). A stacked bar showing how the goodware class
+   grew across the three collection rounds (914 -> 944 -> 999) would
+   nicely illustrate the incremental data-collection story in
+   Section III.
+
+9. THRESHOLD SWEEP CHART (recall-gap investigation)
+   Placement: Results section, recall-gap subsection
+   Shows: line chart of class-E recall (y-axis) against
+   classification threshold (x-axis, 0.85 down to 0.30) - a nearly
+   flat line, visually proving the "lowering the threshold barely
+   helps" finding referenced in Table IX. Strengthens the "this is a
+   real limitation, not a tuning problem" argument with a visual
+   instead of asking the reader to trust the single number in the
+   table.
+
+10. AUTOENCODER NETWORK ARCHITECTURE DIAGRAM
+    Placement: Methodology, anomaly detection model subsection
+    Shows: the 12-10-6-3-6-10-12 layer structure as a standard
+    neural-network node diagram (funnel down to the 3-node
+    bottleneck, funnel back out), labeled encoder/bottleneck/decoder.
+    Why: standard practice for any paper describing an autoencoder;
+    helps readers unfamiliar with the architecture understand the
+    "compression forces generalization" argument at a glance.
+
+11. CROSS-VALIDATION METHODOLOGY DIAGRAM
+    Placement: Methodology, evaluation methodology subsection
+    Shows: the classic 10-fold CV grid diagram (10 rows, each showing
+    9 blue "train" segments and 1 orange "test" segment rotating
+    position) - a very standard, easily-recognized diagram type.
+    Why: purely pedagogical/expository - helps a reader (or a
+    professor in a viva) who isn't deeply familiar with k-fold CV
+    understand exactly what "10-fold cross-validation" produced the
+    headline number, and reassures a technical reviewer the
+    methodology was applied correctly (every row tested exactly once).
+
+
+NOT RECOMMENDED FOR THE PAPER
+-------------------------------------------------------------
+- A literal flowchart of all 12 individual findings/bugs as boxes -
+  too much for one figure, and (per the reframing discussed
+  separately) these belong in prose/a summary table, not a diagram,
+  once relabeled away from bug-tracker style.
+- Screenshots of raw console/terminal output - fine for a slide deck
+  or the demo runbook, not appropriate for the IEEE paper itself.
+
+
+SUGGESTED FIGURE NUMBERING FOR THE PAPER
+-------------------------------------------------------------
+Fig. 1  System Architecture Diagram              (#1 above)
+Fig. 2  Dual-Model Decision Flow                  (#2 above)
+Fig. 3  Autoencoder Network Architecture          (#10 above, if included)
+Fig. 4  Cross-Validation Methodology              (#11 above, if included)
+Fig. 5  Training-Serving Gap Audit Methodology    (#5 above)
+Fig. 6  Confusion Matrix Heatmap                  (#3 above)
+Fig. 7  Feature Importance                        (#4 above)
+Fig. 8  Reconstruction Error Distribution         (#6 above)
+Fig. 9  Threshold Sweep (Recall Gap)              (#9 above, if included)
+Fig. 10 Live Demonstration Sequence               (#7 above)
+
+(Renumber based on which optional ones you actually include - a
+6-8 page conference paper typically fits 4-7 figures comfortably;
+items 1-7 (required) are the priority if space is limited.)
+
+
+HOW TO ACTUALLY PRODUCE THESE
+-------------------------------------------------------------
+- Chart-type diagrams (3, 4, 6, 8, 9) can be generated directly from
+  the numbers already in this project (report.txt, bugs_debugs.txt,
+  cross_validation_results.txt) - ask and these can be built as
+  proper chart images.
+- Flow/architecture diagrams (1, 2, 5, 7, 10, 11) are structural/
+  conceptual and are best built in draw.io, PowerPoint, or similar -
+  can be drafted as a described layout (boxes, arrows, labels) for
+  you to lay out visually, or built as an inline diagram if you'd
+  like that done here too.

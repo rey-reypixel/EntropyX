@@ -1,0 +1,588 @@
+WATCHRANSOM - STUDY GUIDE / EVALUATION PREP
+=================================================================
+Everything you need to explain, defend, and answer questions about
+this project. Written for viva/evaluation prep - covers project
+specifics AND general background concepts a professor might probe.
+=================================================================
+
+
+=================================================================
+SECTION 0: THE 30-SECOND ELEVATOR PITCH
+=================================================================
+"WatchRansom is a real-time ransomware detection system for
+Windows. It watches file, process, network, and registry activity,
+turns that activity into 12 behavioral numbers every 30 seconds,
+and feeds those numbers into two machine learning models at once:
+an XGBoost classifier trained to recognize known ransomware
+behavior patterns, and an autoencoder trained ONLY on normal
+activity, which flags anything that reconstructs badly as a
+possible unknown ('zero-day') threat. The dataset comes from a
+published 2023 paper (Herrera-Silva & Hernandez-Alvarez). Our own
+contribution is building this into an actual live system, and -
+more importantly - a rigorous audit that found and fixed 12 real
+defects in the gap between 'the model tests well offline' and 'the
+system actually works when it's really running', plus honest
+reporting of three things we tried that DIDN'T work."
+
+
+=================================================================
+SECTION 1: THE PROBLEM (BASICS)
+=================================================================
+
+What is ransomware?
+  Malicious software that either (a) encrypts a victim's files and
+  demands payment for the decryption key ("encryptor" ransomware,
+  labeled E in this project), or (b) locks the victim out of their
+  system/screen without necessarily encrypting files ("locker"
+  ransomware, labeled L). Examples: WannaCry, Petya, Cerber, Locky
+  (encryptors); WinLocker, Police Ransomware (lockers).
+
+Signature-based vs behavior-based detection - KNOW THIS COLD:
+  Signature-based (traditional antivirus): matches a file's bytes
+  or hash against a known database of malware "signatures". Fast,
+  low false-positive rate, but BLIND to anything new (zero-days) or
+  even slightly modified malware.
+  Behavior-based (this project): watches WHAT a program DOES (file
+  operations, registry changes, process activity, network
+  connections) rather than what it looks like. Can catch novel
+  variants because the underlying ATTACK PATTERN (scan folders,
+  read files, write encrypted copies, delete originals) is much
+  more stable than the code implementing it.
+  This project is 100% behavior-based / dynamic analysis.
+
+Why not just use signatures?
+  Ransomware authors trivially change file hashes (repack, encrypt
+  the payload, add junk bytes). A brand-new ransomware family, or
+  even a recompiled existing one, has no matching signature yet.
+  Behavioral detection targets what CAN'T be trivially changed: the
+  need to actually scan, read, and rewrite a large number of files
+  to do its job.
+
+
+=================================================================
+SECTION 2: MACHINE LEARNING BASICS USED IN THIS PROJECT
+=================================================================
+
+Supervised vs unsupervised learning:
+  Supervised = learn from LABELED examples (here: rows labeled G/E/L).
+    The XGBoost classifier is supervised.
+  Unsupervised = learn from UNLABELED data, find structure on its
+    own. The autoencoder is unsupervised (trained only on goodware,
+    with no "this is normal" label needed beyond "all these rows
+    happen to be goodware").
+
+What is XGBoost?
+  "Extreme Gradient Boosting." An ensemble of decision trees built
+  SEQUENTIALLY, where each new tree is trained to correct the
+  errors of the trees before it (gradient boosting). Very strong on
+  tabular/structured data (rows and columns, like ours), fast,
+  handles feature interactions well, and gives you FEATURE
+  IMPORTANCE for free (which of the 12 features mattered most).
+  Config used here: 200 trees (n_estimators=200), max depth 5 per
+  tree, learning rate 0.1, objective=multi:softmax (3-class
+  classification: E/G/L).
+
+What is a decision tree, briefly?
+  A flowchart of yes/no questions on feature values ("is
+  file_created > 500?") that ends in a predicted class. A single
+  tree overfits easily; boosting many shallow trees together
+  (what XGBoost does) is much more robust.
+
+What is an autoencoder?
+  A neural network trained to reconstruct its OWN input after
+  squeezing it through a narrow "bottleneck" layer (here:
+  12 -> 10 -> 6 -> 3 -> 6 -> 10 -> 12). Because the bottleneck is
+  narrower than the input, the network can't just memorize/copy -
+  it has to learn a compressed representation of whatever patterns
+  it was trained on. Trained ONLY on goodware here, so it becomes
+  good at reconstructing NORMAL behavior and bad at reconstructing
+  anything unfamiliar (like ransomware). The reconstruction error
+  (mean squared error between input and output) becomes an anomaly
+  score: high error = "this doesn't look like anything I've seen
+  before" = possible zero-day threat.
+
+Why use BOTH models instead of just one?
+  XGBoost catches KNOWN ransomware patterns well (it was trained on
+  labeled examples of exactly that). But it can only recognize what
+  it was shown. The autoencoder doesn't need labeled ransomware at
+  all - it just needs to know what NORMAL looks like, so it can
+  flag anything abnormal, including ransomware families never seen
+  in training. This is a defense-in-depth design: two independent
+  detection paths that can each catch what the other misses. (This
+  was actually DEMONSTRATED live in our demo - see Section 10.)
+
+Precision vs Recall vs F1 - KNOW THIS COLD, will likely be asked:
+  Precision = of everything I FLAGGED as ransomware, what fraction
+    actually WAS ransomware? (Low precision = too many false
+    alarms on innocent users.)
+  Recall = of everything that WAS ACTUALLY ransomware, what
+    fraction did I catch? (Low recall = ransomware slips through
+    undetected - the worse failure mode in security.)
+  F1 = harmonic mean of precision and recall, a single number
+    balancing both.
+  Confusion matrix = a table of actual class (rows) vs predicted
+    class (columns); the diagonal is correct predictions, off-
+    diagonal cells are the specific mistakes made.
+
+Why 10-fold cross-validation instead of one train/test split?
+  A single 80/20 split's accuracy number depends partly on WHICH
+  rows happened to land in the test set - pure luck of the draw. In
+  this project, three different single-split retrains of what was
+  basically the same model gave 98.43% / 98.28% / 98.30% - a
+  spread that could easily be mistaken for "the changes we made
+  helped or hurt" when it was actually just noise. 10-fold CV
+  splits the data into 10 chunks, trains on 9 and tests on the 1
+  left out, ten times (so every row gets tested exactly once), and
+  reports a MEAN and STANDARD DEVIATION - which tells you whether a
+  difference between two results is real or just noise. This
+  project's final headline number (98.10% accuracy, std 0.62%) is
+  the 10-fold CV result, deliberately not a single split.
+
+Why StandardScaler / feature scaling?
+  The 12 features are on wildly different numeric scales (e.g.
+  "arguments" might be 0-20, "command_line" might be in the
+  thousands). Models like XGBoost are fairly scale-insensitive, but
+  the autoencoder (a neural network) is NOT - unscaled inputs would
+  let large-magnitude features dominate training. StandardScaler
+  transforms each feature to have mean 0, standard deviation 1.
+
+What is feature importance?
+  A score (from XGBoost) of how much each of the 12 input features
+  contributed to the model's decisions, on average, across all its
+  trees. In this project's final model: directory_enumerated (how
+  many distinct folders were touched - classic ransomware
+  "scanning" behavior) was the single most important feature at
+  27.4%.
+
+
+=================================================================
+SECTION 3: THE DATASET
+=================================================================
+
+Source (CITE THIS EXACTLY):
+  Herrera-Silva, J.A.; Hernandez-Alvarez, M. "Dynamic Feature
+  Dataset for Ransomware Detection Using Machine Learning
+  Algorithms." Sensors 2023, 23(3), 1053.
+  DOI: 10.3390/s23031053
+  Authors: Escuela Politecnica Nacional, Quito, Ecuador.
+
+What's in it:
+  2,000 samples total (1000 G / 800 E / 200 L), generated by
+  running 20 ransomware + 20 goodware samples through a dynamic
+  analysis sandbox (Cuckoo Sandbox-style), 10 executions each,
+  across 5 Windows platforms. Originally 326 raw dynamic features,
+  reduced to 50 low-redundancy, high-relevance features by the
+  original authors. We did NOT create this dataset - it is properly
+  cited, third-party, published, peer-reviewed data.
+
+What WE did with it:
+  Selected a 12-feature "practical" subset (the features
+  reproducible from a live host using ordinary monitoring, without
+  the sandbox's privileged instrumentation), and extended the
+  goodware (G) side with REAL telemetry we collected ourselves by
+  running the actual monitoring system on a real machine (three
+  separate collection rounds, ~1,999 real goodware rows in the
+  final dataset, vs the original 1,000 sandboxed goodware rows).
+
+Final training set: 2,999 rows (G=1,999, E=800, L=200).
+
+
+=================================================================
+SECTION 4: THE 12 BEHAVIORAL FEATURES
+=================================================================
+  1. file_read            - file modification event count
+  2. file_created          - file creation event count
+  3. regkey_written        - registry key write count
+  4. regkey_read           - registry key read count
+  5. apistats              - crypto-API-capable module loads (PROXY - see below)
+  6. command_line          - cumulative process command-line length
+  7. directory_enumerated  - distinct directories touched (PROXY)
+  8. dll_loaded            - loaded module/DLL count
+  9. tree_command_line     - process-ancestor-chain command length (PROXY)
+  10. arguments            - process argument count
+  11. urls                 - network connection count
+  12. proc_pid             - new process count
+
+Why "PROXY" on three of them:
+  The original dataset's apistats/directory_enumerated/
+  tree_command_line came from TRUE in-sandbox API hooking (every
+  single Windows API call the malware made, intercepted and
+  counted). Reproducing that on a real, live host would require
+  kernel-level instrumentation (an ETW consumer or a filesystem
+  minifilter driver) - a much bigger engineering project, out of
+  scope here. Instead we built PROXIES using ordinary tools
+  (psutil): apistats is approximated by counting loaded
+  cryptography-related DLLs (advapi32.dll, bcrypt.dll, crypt32.dll,
+  etc.); directory_enumerated by counting distinct directories a
+  process has open files in, PLUS distinct directories touched by
+  real file-system events; tree_command_line by summing command-
+  line length across a process's ancestor chain. These are
+  DIRECTIONALLY correlated with the real signal but not on the same
+  numeric scale - an honestly-documented limitation, not hidden.
+
+
+=================================================================
+SECTION 5: SYSTEM ARCHITECTURE
+=================================================================
+  4 real-time monitors -> Event Collector -> Event Aggregator
+  (rolls raw events into the 12 features over a 30-second window)
+  -> Inference Engine (runs BOTH models) -> Alert System (CRITICAL/
+  WARNING/INFO, logs to CSV+JSON) -> Prevention System (optional
+  auto-response, disabled by default).
+
+  File Monitor    - watchdog library, event-driven (OS filesystem
+                    notifications), watches file create/modify/delete
+  Process Monitor - psutil, polls every 2s, tracks process creation
+                    + the 3 proxy features above
+  Network Monitor  - psutil, polls every 3s, tracks TCP/UDP connections
+  Registry Monitor - winreg, polls every 5s, samples key hive counts
+
+
+=================================================================
+SECTION 6: TOOLS & LIBRARIES USED (full list)
+=================================================================
+  Python 3.12          - implementation language
+  psutil                - process/system introspection (process list,
+                          memory maps, open files, CPU/memory usage)
+  watchdog               - filesystem event monitoring (cross-platform,
+                          uses native OS APIs under the hood - ReadDirectoryChangesW on Windows)
+  winreg (stdlib)        - Windows registry access
+  pandas / numpy         - data manipulation, feature aggregation
+  scikit-learn            - StandardScaler, LabelEncoder, train_test_split,
+                          StratifiedKFold, classification_report,
+                          confusion_matrix, compute_sample_weight
+  xgboost                 - the XGBClassifier supervised model
+  tensorflow / keras       - the autoencoder neural network
+  joblib                  - saving/loading trained models and scalers to disk
+  threading (stdlib)       - running the 4 monitors concurrently
+  csv / json (stdlib)      - event and alert logging
+  subprocess (stdlib)      - used in prevention_system.py and the demo
+                          simulator for process spawn/control
+  python-docx (paper prep only) - generating this project's Word documents
+                          (used because Node.js/docx-js, the normally
+                          preferred tool, was not available in this
+                          environment)
+
+
+=================================================================
+SECTION 7: OUR NOVELTY / INNOVATION / CONTRIBUTIONS
+=================================================================
+BE HONEST ABOUT THIS IF ASKED "what did YOU actually contribute?"
+We did NOT invent: the dataset, XGBoost, autoencoders, or the
+general idea of behavioral ransomware detection. Those are prior
+work, properly cited. Our contribution is everything involved in
+turning a static academic dataset into an actual, audited, working
+LIVE system, plus a set of genuinely reusable findings:
+
+1. LIVE SYSTEM ENGINEERING: built the full real-time pipeline
+   (4 monitors, aggregator, dual-model inference, alerting,
+   optional automated prevention) around the dataset - the paper's
+   source dataset is just numbers in a CSV; making it drive a
+   running, real-time Windows monitor is separate engineering work.
+
+2. PROXY FEATURE DESIGN: designed and validated three live-host
+   proxies (apistats via crypto-DLL detection, directory_enumerated
+   via open-files + real filesystem events, tree_command_line via
+   process ancestry) for features that originally required
+   privileged sandbox instrumentation. Confirmed via live testing
+   that these proxies produce real, non-zero, meaningful signal.
+
+3. THE "TRAINING-SERVING GAP" AUDIT (the biggest single
+   contribution): systematically traced every one of the 12 trained
+   features back to its live data source and found THREE were
+   always zero in production (41% of the model's decision weight,
+   completely unreachable) despite the model reporting 98%+ offline
+   accuracy. This is a general, reusable finding: offline accuracy
+   on a held-out test set does NOT prove a live ML system behaves
+   correctly, because it's usually measured in a self-consistent
+   bubble that doesn't match what live data collection can actually
+   produce.
+
+4. FOUND AND FIXED 12 CONCRETE DEFECTS (not just the one above),
+   each illustrating a DIFFERENT failure mode invisible to a normal
+   code review or accuracy check:
+     - a "fix" that only sampled data once at process birth
+       (nearly useless for long-running processes)
+     - an offline data pipeline that crashed on realistic (1.3GB)
+       data volumes
+     - a fully-built automated response system that was never
+       actually connected to anything
+     - a coupled configuration threshold that goes stale silently
+       every time the model is retrained (caught and had to be
+       re-fixed 3 SEPARATE times across this project - itself an
+       interesting finding about how easy this kind of bug is to
+       reintroduce)
+     - a performance "optimization" that, when actually benchmarked
+       under realistic load (266 real processes), turned out to
+       still be 13-26x SLOWER than its own budget - i.e. it looked
+       fixed by code review but was empirically still broken
+     - a silent CSV-parsing failure caused by a UTF-8 byte-order-
+       mark, discovered because 100% of rows failed with zero error
+       messages
+     - a 12th trained feature found to have the SAME defect as the
+       very first bug, discovered only while writing up the paper's
+       own limitations section - proof that even a careful audit
+       process can miss things the first time
+
+5. RIGOROUS, HONEST EMPIRICAL METHODOLOGY:
+   - Adopted 10-fold cross-validation (matching the source dataset
+     paper's own methodology) instead of trusting single-split
+     numbers, after observing they varied purely from random chance.
+   - Ran real live monitoring sessions (not simulated/fabricated
+     data) specifically to validate that fixes produced genuine
+     signal, and reported honestly when a session's data quality
+     (an unrepresentative activity burst) may have hurt a metric.
+   - Attempted THREE separate fixes for a known weakness (class
+     weighting, threshold tuning, and burst-filtering for the
+     autoencoder) and reported ALL THREE as honest null results
+     when they didn't work, rather than cherry-picking or forcing a
+     narrative. This is good scientific practice and worth stating
+     explicitly in an evaluation: negative results are still
+     results.
+
+6. A SAFE, REPRODUCIBLE DEMO METHODOLOGY: built a self-contained
+   attack simulator that exercises genuinely realistic ransomware-
+   like file/process behavior (mass file rewrite, crypto module
+   usage, directory enumeration) without touching anything outside
+   its own throwaway folder or using any real malicious code -
+   letting the system be demonstrated live and safely.
+
+7. DISCOVERED A NEW LIMITATION DURING DEMO PREP (not fixed, but
+   found and documented honestly): the process monitor is system-
+   wide, so it picks up noise from the monitoring system's OWN
+   heavy ML library imports (TensorFlow etc.), which can push a
+   feature 100x beyond anything seen in training and confuse the
+   classifier - while the autoencoder was NOT confused by the same
+   noise in testing. This is itself a nice illustration of why the
+   dual-model design has real value, discovered "for free" while
+   preparing the demo rather than being a designed experiment.
+
+
+=================================================================
+SECTION 8: FINAL RESULTS (memorize these numbers)
+=================================================================
+XGBoost Classifier - 10-fold cross-validation, 2,999-row dataset:
+  Mean accuracy:        98.10%  (std 0.62%, 95% CI 97.72%-98.48%)
+  Class E (encryptor):  precision 100.00%,  recall 93.00%,  F1 96.36%
+  Class G (goodware):   precision  97.23%,  recall 100.00%, F1 98.60%
+  Class L (locker):     precision 100.00%,  recall 99.50%,  F1 99.74%
+  Zero goodware samples misclassified as ransomware across the
+  ENTIRE cross-validated evaluation (all 2,999 rows, all 10 folds).
+
+  Top 3 most important features: directory_enumerated (27.4%),
+  file_created (13.8%), apistats (12.8%).
+
+Autoencoder (anomaly detector) - evaluated against source dataset:
+  Goodware avg reconstruction error: 0.508
+  Encryptor avg error: 152.4   |   Locker avg error: 291.9
+  Best detection F1: 0.6069 at threshold 0.541678
+
+Known, honestly-reported weakness:
+  93.0% recall on encryptor ransomware (class E) - about 1 in 14
+  encryptor samples slips through the classifier. Tried to fix this
+  two ways (class-weighted training, aggressive threshold lowering
+  down to 0.30) - NEITHER helped meaningfully. This tells us the
+  model is CONFIDENTLY wrong on these cases, not just uncertain -
+  meaning it's a real feature/data limitation, not something fixable
+  by tuning knobs.
+
+
+=================================================================
+SECTION 9: THE 12 FINDINGS, ONE-LINE EACH (full detail in
+bugs_debugs.txt)
+=================================================================
+ 1. CRITICAL - 3 of 12 features always zero in production (41% of
+    model weight unreachable)
+ 2. LOW-MED  - file deletions miscounted as file creations
+ 3. HIGH     - the fix for #1 only sampled data once, at process birth
+ 4. HIGH     - offline retraining script crashed on realistic (1.3GB)
+    data
+ 5. MEDIUM   - automated prevention system built but never connected
+    to anything
+ 6. CRITICAL - anomaly threshold goes stale after every retrain
+    (recurred 3 times)
+ 7. LOW-MED  - avoidable blocking calls + an unvalidated performance fix
+ 8. LOW      - UTF-8 BOM silently broke CSV parsing (100% row failure,
+    zero errors)
+ 9. CRITICAL - a "performance fix" was still 13-26x over its own
+    budget when actually benchmarked
+10. LOW      - a 12th feature (tree_command_line) found to have the
+    same defect as #1
+11. (Investigation, not a bug) - autoencoder burst-filtering fix
+    ATTEMPTED, made things WORSE, reverted - honest negative result
+12. MEDIUM - process monitor picks up the monitoring system's own
+    library-loading noise, confusing the classifier (found during
+    demo prep, documented, not yet fixed)
+
+
+=================================================================
+SECTION 10: THE LIVE DEMO - WHAT HAPPENS AND WHY
+=================================================================
+The demo runs a safe, self-contained "attack simulator"
+(demo/simulate_ransomware_behavior.py) against a throwaway folder
+of 400 dummy files, exercising real file read/write/delete
+operations and real cryptographic module usage (Python's hashlib),
+while the actual WatchRansom monitor watches live.
+
+What you will see: the AUTOENCODER reliably fires a CRITICAL
+"ZERO-DAY THREAT" alert (anomaly_score = 1.0, tested 3 times). The
+XGBOOST CLASSIFIER, in testing, said "Goodware" instead of
+"Ransomware" - traced to Finding #12 above (system-wide process
+noise from the monitor's own ML libraries). Explain this honestly
+if asked, don't hide it - it's a genuine, interesting finding, not
+a scripted failure, and it demonstrates exactly why having two
+independent models matters.
+
+
+=================================================================
+SECTION 11: LIKELY QUESTIONS FROM PROFESSORS (with answers)
+=================================================================
+
+Q: "Why XGBoost and not a simpler model like logistic regression
+   or a single decision tree?"
+A: Tabular data with 12 numeric features and likely non-linear
+   interactions between them (e.g. high file_created ALONE isn't
+   suspicious, but high file_created + high directory_enumerated
+   + low regkey_read together is). Gradient-boosted trees handle
+   these interactions and non-linearities well, and are the
+   standard strong baseline for structured/tabular data - regularly
+   outperforming both simpler linear models and, on data this
+   size, often deep learning too.
+
+Q: "Why not just use the autoencoder alone, or the classifier
+   alone?"
+A: They catch different things. The classifier is precise on known
+   patterns but can only recognize what it was trained on. The
+   autoencoder needs no ransomware examples at all, so it can catch
+   NOVEL ransomware, but has a higher false-positive tendency and
+   no ability to name WHICH kind of threat it is. Using both is a
+   defense-in-depth strategy - demonstrated concretely in our own
+   demo, where the classifier missed a live attack but the
+   autoencoder caught it.
+
+Q: "How do you know 98.10% is a real number and not overfitting /
+   lucky?"
+A: It's a 10-fold cross-validated MEAN with a standard deviation
+   (0.62%) and 95% confidence interval (97.72%-98.48%), not a
+   single lucky split - and we specifically adopted this
+   methodology after observing single-split numbers fluctuate by
+   noise alone across retrains.
+
+Q: "What happens if ransomware encrypts files very slowly, to
+   stay under the radar?"
+A: Honestly, this is a real limitation, documented as such. The
+   30-second aggregation window is tuned to catch BURST-y activity;
+   a slow, low-and-steady encryption process could produce feature
+   values below detection thresholds in any single window. Flagged
+   as a known evasion vector in the paper limitations, and as
+   future work (e.g. longer-window secondary aggregation).
+
+Q: "Could an attacker evade this system?"
+A: Yes, plausibly, in several ways we're upfront about: slow
+   encryption (above), fileless/memory-only ransomware (no file
+   operations to observe at all), or an attacker aware of our
+   proxy features specifically avoiding loading detectable crypto
+   DLLs (using custom crypto implementations instead of Windows
+   crypto APIs, for instance). No detection system is unevadable;
+   the goal is raising the cost/skill required, not perfect defense.
+
+Q: "Why is recall on encryptor ransomware only 93%, and why
+   didn't you just fix it?"
+A: We tried two standard fixes (class-weighted training, threshold
+   tuning down to a very permissive 0.30) and BOTH failed to move
+   the number meaningfully. That tells us the misclassified samples
+   are confidently (not marginally) predicted wrong - a genuine
+   feature/data limitation, not a tunable knob. Real fixes would
+   need better features (true API hooking) or more/different
+   training data, both flagged as future work. We'd rather report
+   an honest 93% with a clear explanation than force a fake fix.
+
+Q: "What's actually novel here versus just running someone else's
+   dataset through XGBoost?"
+A: See Section 7 above in full - short version: the dataset is
+   third-party (properly cited), but everything about making it
+   drive a real, live, continuously-running detection system - the
+   proxy feature design, the systematic training-serving-gap audit
+   that found and fixed 12 real defects, the rigorous CV-based
+   evaluation, and the honest reporting of failed fix attempts - is
+   this project's own work.
+
+Q: "Is the prevention/auto-response feature (killing processes,
+   locking files, disabling network) actually tested?"
+A: Process termination was live-tested directly on the development
+   machine (NOT in a VM - killing a disposable throwaway process
+   spawned specifically for the test is safe on any machine) and
+   works correctly. Filesystem locking and network isolation were
+   NOT live-tested AT ALL - not in a VM, not on the host, zero
+   execution of either. Both are destructive, hard-to-reverse
+   actions (disabling real network adapters, recursively chmod-ing
+   real directories) with no safe way to scope a test to a
+   throwaway target on a real machine. A VM was considered
+   specifically for this, but setting one up was not feasible in
+   this environment (no admin/elevated privileges available, no
+   Hyper-V/VirtualBox/WSL installed) - confirmed via a direct
+   feasibility check, not assumed. All three actions remain
+   DISABLED by default in the shipped configuration regardless.
+
+Q: "Isn't leaving network isolation and filesystem lock completely
+   untested a weakness in the paper?"
+A: Not a weakness in the paper's actual argument, because prevention
+   was never central to it. THE CENTER OF THIS PAPER IS DETECTION,
+   not automated response: the 98.10% cross-validated accuracy
+   result and the training-serving-gap engineering audit (12
+   findings) are 100% about whether the system correctly IDENTIFIES
+   ransomware behavior. Automated response is a secondary,
+   bolt-on capability - it appears in zero results, zero abstract
+   claims, and only a small fraction of the architecture/limitations
+   discussion (roughly one component out of seven in the
+   architecture table, one paragraph out of six in limitations, one
+   bullet out of eight in future work). Nothing the paper claims or
+   evaluates depends on prevention having been tested.
+
+   The actual argument to give if pushed on this: "This paper's
+   contribution and evaluation is about detection - whether the
+   system correctly identifies ransomware behavior, and what it
+   takes to make that correct in live deployment - not whether it
+   correctly responds afterward. The prevention capability exists
+   and is wired into the alert pipeline, but rigorously validating
+   destructive actions requires an isolated, disposable environment
+   to avoid real risk, which was not available in this project's
+   timeline. We validated the one safely-testable action (process
+   termination, against a disposable process) to confirm the
+   response mechanism itself works end-to-end, and explicitly scope
+   the other two as future work requiring VM-based validation."
+   This is a deliberate, safety-conscious scoping decision, not an
+   oversight - and is generally viewed favorably in evaluation:
+   testing "disable my network adapters" or "recursively chmod real
+   directories" on a real, undisposable machine just to check a box
+   would be worse judgment than leaving it honestly untested.
+
+Q: "What would you do with more time?"
+A: (see Future Work in the paper) Real API hooking (ETW) instead of
+   the current proxies; regenerating the ransomware-class training
+   rows using the same live-proxy method for exact train/live
+   parity; a larger, multi-machine goodware corpus; investigating
+   the still-unexplained autoencoder F1 fluctuation across retrains;
+   fixing the system-wide process-noise issue found during demo
+   prep; and validating the destructive prevention actions on a VM.
+
+
+=================================================================
+SECTION 12: GLOSSARY (quick reference)
+=================================================================
+Zero-day threat    - a threat with no prior known signature/pattern
+DLL                - Dynamic Link Library, a Windows shared code module
+Registry           - Windows' hierarchical config/settings database
+ETW                - Event Tracing for Windows, a kernel-level
+                     logging framework (would enable TRUE API hooking)
+Sandbox             - an isolated environment for safely running/
+                     observing malware (e.g. Cuckoo Sandbox)
+Feature vector      - the list of numbers (here, 12) describing one
+                     observation, fed into a model
+Reconstruction error - how different an autoencoder's output is
+                     from its input; the anomaly signal
+Overfitting          - a model that memorizes training data instead
+                     of learning generalizable patterns; performs
+                     well on training data, poorly on new data
+Stratified split     - a train/test split that preserves the
+                     original class proportions in each subset

@@ -1,0 +1,291 @@
+# WatchRansom - Ransomware Detection and Prevention System
+# Complete Project Documentation
+
+## Overall Architecture
+
+WatchRansom/
+├── main.py                    # Entry point - orchestrates monitoring
+├── config.json                # Configuration settings
+├── monitor/                   # Real-time monitoring components
+│   ├── file_monitor.py        # File system event tracking
+│   ├── process_monitor.py     # Process creation/activity monitoring
+│   ├── network_monitor.py     # Network connection tracking
+│   ├── registry_monitor.py    # Registry change detection
+│   ├── event_collector.py     # Central event aggregation
+│   ├── alert_system.py        # Alert generation and logging
+│   └── start_monitoring.py    # Monitor orchestration
+├── src/                       # ML training and inference
+│   ├── inference_engine.py    # Real-time ML classification
+│   ├── event_aggregator.py    # Time-window event aggregation
+│   ├── train_practical_xgboost.py  # XGBoost model training
+│   ├── train_autoencoder.py   # Autoencoder training
+│   └── collect_normal_data.py # Normal data collection
+├── models/                    # Trained ML models
+│   ├── practical_xgboost.pkl  # XGBoost classifier
+│   ├── practical_scaler.pkl   # Feature scaler
+│   ├── autoencoder_model.keras # Autoencoder for anomaly detection
+│   └── autoencoder_scaler.pkl # Autoencoder scaler
+├── datasets/                  # Training data
+│   ├── ransomware_dataset.csv # Original ransomware samples
+│   └── balanced_dataset.csv   # Balanced dataset with normal activity
+└── monitor/logs/              # Runtime logs
+    ├── events.csv             # All collected events
+    └── alerts.csv             # Detection alerts
+
+## System Flow
+
+### 1. Initialization Phase
+main.py → load_config.json → start_monitoring.py
+         ↓
+    Initialize monitors (file, process, network, registry)
+         ↓
+    Load ML models (XGBoost, Autoencoder, Scaler)
+         ↓
+    Initialize event_collector and inference_engine
+
+### 2. Monitoring Phase
+Monitors run in parallel threads:
+├── file_monitor.py    → Watches file system changes
+├── process_monitor.py → Tracks process creation/activity
+├── network_monitor.py → Monitors network connections
+└── registry_monitor.py→ Detects registry modifications
+         ↓
+    All events → event_collector.add_event()
+         ↓
+    Events logged to monitor/logs/events.csv
+         ↓
+    Events sent to event_aggregator (30-second windows)
+
+### 3. Classification Phase
+Every 30 seconds or when min_events (10) reached:
+    event_aggregator.get_aggregated_features()
+         ↓
+    Feature vector (12 behavioral features)
+         ↓
+    inference_engine.classify_aggregated()
+         ↓
+    ├── XGBoost classification (G/E/L)
+    └── Autoencoder anomaly detection
+         ↓
+    alert_system.analyze_classification()
+         ↓
+    Generate alert if thresholds exceeded
+
+## Parameters Analyzed (12 Behavioral Features)
+
+The system aggregates events into 12 key features that match the training data format:
+
+Feature              Description                          Source
+file_read            File read/modify operations          file_monitor
+file_created         File creation events                 file_monitor
+regkey_written       Registry key modifications           registry_monitor
+regkey_read          Registry key reads                    registry_monitor
+apistats             API call statistics                   process_monitor
+command_line         Command line argument length         process_monitor
+directory_enumerated Directory enumeration count           file_monitor
+dll_loaded           DLL loading activity                  process_monitor
+tree_command_line    Process tree command lines            process_monitor
+arguments            Number of process arguments           process_monitor
+urls                 Network connections/URLs              network_monitor
+proc_pid             Process identification count          process_monitor
+
+## Event Types Tracked
+
+### File Events
+- created    - New file creation
+- modified   - File content changes
+- deleted    - File deletion
+
+### Process Events
+- created    - New process creation
+- Command line arguments
+- DLL loading
+- CPU/memory usage
+
+### Network Events
+- connection - TCP/UDP connections
+- Remote IP addresses
+- Local/remote ports
+- Connection status (ESTABLISHED, TIME_WAIT)
+
+### Registry Events
+- written    - Registry key modifications
+- read       - Registry key reads
+
+## ML Classification Logic
+
+### XGBoost Supervised Classification
+Input: 12 normalized features
+↓
+XGBoost model (3 classes)
+↓
+Output probabilities: [P(E), P(G), P(L)]
+↓
+Classification:
+- If max(P(E), P(L)) ≥ 0.85 → Ransomware (E or L)
+- Else → Goodware (G)
+
+### Autoencoder Anomaly Detection
+Input: 12 normalized features
+↓
+Autoencoder (trained only on goodware)
+↓
+Reconstruction error (MSE)
+↓
+Anomaly score = MSE / threshold
+↓
+If anomaly_score ≥ 0.18 → Anomalous (potential zero-day)
+
+## Alert Levels
+
+Level     Condition                              Action
+CRITICAL  Ransomware confidence ≥ 85% OR        Immediate alert
+          anomaly ≥ 0.9
+WARNING   Ransomware confidence ≥ 70% OR        Caution alert
+          anomaly ≥ 0.7
+INFO      Normal activity confirmed             Informational
+
+## Configuration Parameters
+
+{
+  "monitoring": {
+    "enabled_monitors": ["file", "process", "network", "registry"],
+    "monitor_folders": ["test_folder"],
+    "file_monitor": {
+      "recursive": true,
+      "ignore_patterns": [".git", "__pycache__"]
+    },
+    "process_monitor": {
+      "poll_interval": 2,
+      "ignore_system_processes": true
+    },
+    "network_monitor": {
+      "poll_interval": 3,
+      "ignore_local_connections": false
+    },
+    "registry_monitor": {
+      "poll_interval": 5,
+      "monitor_hives": ["HKEY_LOCAL_MACHINE", "HKEY_CURRENT_USER"]
+    }
+  },
+  "ml": {
+    "enabled": true,
+    "classification_threshold": 0.85,
+    "anomaly_threshold": 0.18,
+    "aggregation": {
+      "window_seconds": 30,
+      "min_events": 10
+    }
+  }
+}
+
+## Key Design Decisions
+
+1. Time-window aggregation: Events are aggregated over 30-second windows to match 
+   training data format (behavioral statistics rather than single events)
+
+2. Dual-model approach: XGBoost for known ransomware patterns, autoencoder for 
+   zero-day detection
+
+3. Real-time processing: Monitors run in parallel threads, classification happens 
+   every 30 seconds
+
+4. Feature-based detection: Focuses on behavioral patterns rather than signature 
+   matching
+
+## Model Training Process
+
+### Dataset Preparation
+1. Collect normal Windows activity from event logs
+2. Process events into 30-second aggregated windows
+3. Merge with existing ransomware dataset
+4. Create balanced dataset (2869 samples):
+   - 1869 goodware samples
+   - 800 encryption ransomware samples
+   - 200 locker ransomware samples
+
+### XGBoost Training
+- Input: 12 behavioral features
+- Output: 3-class classification (G/E/L)
+- Accuracy: 98.43%
+- Zero false positives on goodware test set
+
+### Autoencoder Training
+- Trained only on goodware samples
+- Learns normal behavioral patterns
+- Anomaly threshold: 0.18 (90th percentile of goodware reconstruction errors)
+- Detects zero-day threats through reconstruction error
+
+## Usage Examples
+
+### Start Monitoring
+python main.py
+
+### Monitor Specific Folder
+python main.py --folder "C:\path\to\monitor"
+
+### Disable ML Classification (Data Collection Only)
+python main.py --no-ml
+
+### Use Custom Configuration
+python main.py --config custom.json
+
+## Retraining Models
+
+### Retrain XGBoost with New Data
+python src/train_practical_xgboost.py
+
+### Retrain Autoencoder with New Data
+python src/train_autoencoder.py
+
+### Collect Normal Activity Data
+python src/collect_normal_data.py --collect --duration 30
+python src/collect_normal_data.py --process
+python src/collect_normal_data.py --merge
+
+## Performance Metrics
+
+### XGBoost Model
+- Accuracy: 98.43%
+- Precision (Goodware): 0.98
+- Recall (Goodware): 1.00
+- F1-Score (Goodware): 0.99
+
+### Autoencoder Model
+- Goodware reconstruction error: 0.137 (average)
+- Ransomware reconstruction error: 635-1373 (average)
+- Anomaly detection F1-Score: 0.70
+
+## Troubleshooting
+
+### High False Positive Rate
+- Increase classification_threshold in config.json
+- Increase anomaly_threshold in config.json
+- Collect more normal activity data and retrain models
+
+### ML Components Failed to Load
+- Ensure models are trained (check models/ directory)
+- Verify all dependencies are installed
+- Run with --no-ml flag for data collection mode
+
+### Permission Denied Errors
+- Run terminal/command prompt as Administrator
+- Process and network monitoring need elevated permissions
+
+## Future Enhancements
+
+- Implement registry monitoring (currently placeholder)
+- Add email/SMS alert notifications
+- Web dashboard for real-time monitoring
+- Automatic threat response (process termination, file quarantine)
+- Integration with SIEM systems
+- Multi-platform support (Linux, macOS)
+
+## License
+
+This project is for educational and research purposes.
+
+## Disclaimer
+
+This software is provided as-is for ransomware detection research. Always test in 
+a controlled environment before production deployment.

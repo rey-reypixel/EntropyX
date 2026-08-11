@@ -1,0 +1,22 @@
+10-Fold Stratified Cross-Validation Results
+Dataset: datasets/balanced_dataset.csv (shape (2999, 13))
+Class distribution:
+family
+G    1999
+E     800
+L     200
+
+Per-fold accuracy: [np.float64(0.9833), np.float64(0.9833), np.float64(0.9733), np.float64(0.9833), np.float64(0.99), np.float64(0.9733), np.float64(0.9833), np.float64(0.9833), np.float64(0.9867), np.float64(0.9699)]
+Mean accuracy: 0.9810
+Std deviation: 0.0062
+Min / Max: 0.9699 / 0.9900
+
+Per-class metrics (mean +/- std):
+  E: precision=1.0000+/-0.0000  recall=0.9300+/-0.0238  f1=0.9636+/-0.0129
+  G: precision=0.9723+/-0.0087  recall=1.0000+/-0.0000  f1=0.9860+/-0.0045
+  L: precision=1.0000+/-0.0000  recall=0.9950+/-0.0150  f1=0.9974+/-0.0077
+
+Aggregate confusion matrix (order=['E', 'G', 'L']):
+[[ 744   56    0]
+ [   0 1999    0]
+ [   0    1  199]]
