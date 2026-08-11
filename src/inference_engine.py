@@ -20,6 +20,28 @@ from event_aggregator import get_aggregator
 # INFERENCE ENGINE
 # ==========================================================
 
+# dll_loaded is the one feature clipped before scaling (v2 audit,
+# FINDING #12 follow-up). It is a per-window SUM of loaded-module counts
+# across every process observed - a single unusually heavy but entirely
+# benign process (this monitor's own ML libraries, or any other resource-
+# heavy software on the host) can push it to values with no relationship
+# to attacker behavior: a live test window recorded dll_loaded=11,125
+# purely from ambient noise. Training data grounds the cap: the highest
+# value either ransomware class ever reaches is 109 (class E); goodware's
+# 99th percentile is 121; goodware's actual maximum is 10,812, entirely
+# from a handful of self-collected windows with heavy dev-tooling running.
+# 150 sits just above both real classes' observed range and two orders of
+# magnitude below the noise-driven outliers, so it should not suppress
+# genuine signal from either ransomware class.
+#
+# apistats is deliberately NOT clipped the same way, despite superficially
+# similar reasoning: unlike dll_loaded, class E legitimately reaches into
+# the hundreds/thousands (mean 110.8, p95 347, max 1671) because real
+# encryptor ransomware genuinely calls many cryptographic APIs - clipping
+# it at a similar threshold would suppress the attack signal apistats
+# exists to capture, not just noise.
+DLL_LOADED_CLIP = 150.0
+
 class RansomwareInferenceEngine:
     """
     Real-time inference engine for ransomware detection using trained ML models.
@@ -80,7 +102,18 @@ class RansomwareInferenceEngine:
             "proc_pid"
         ]
         self.load_models()
-    
+
+    def _clip_extreme_features(self, features):
+        """
+        Clip dll_loaded to DLL_LOADED_CLIP before it reaches either model.
+        See the module-level comment on DLL_LOADED_CLIP for why this
+        feature specifically, and why apistats is deliberately excluded.
+        """
+        clipped = np.array(features, dtype=float, copy=True)
+        dll_idx = self.feature_names.index("dll_loaded")
+        clipped[dll_idx] = min(clipped[dll_idx], DLL_LOADED_CLIP)
+        return clipped
+
     def load_models(self):
         """
         Load trained ML models and scalers.
@@ -154,6 +187,7 @@ class RansomwareInferenceEngine:
         try:
             # Get aggregated features
             features = self.aggregator.get_aggregated_features()
+            features = self._clip_extreme_features(features)
 
             # Gate on the REAL event count (same definition should_classify()
             # uses), not a sum of feature magnitudes. The previous version

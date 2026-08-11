@@ -197,3 +197,95 @@ def test_batch_classify_removed(engine):
     aggregated 30s windows. Removed rather than papered over; this test
     documents that it is gone on purpose, not missing by accident."""
     assert not hasattr(engine, "batch_classify")
+
+
+# ------------------------------------------------------- FINDING #12 follow-up
+
+def test_dll_loaded_is_clipped_before_either_model_sees_it(engine):
+    """dll_loaded is a per-window SUM of loaded-module counts across every
+    observed process - a single heavy but benign process (this monitor's
+    own ML libraries, or any other resource-heavy software on the host)
+    can push it far outside anything either ransomware class ever reaches
+    (E max 109, L max 44) with no relation to attacker behavior. A live
+    test window recorded dll_loaded=11,125 from ambient noise alone. Pins
+    that the clip applies regardless of how far over it the raw value is."""
+    from src.inference_engine import DLL_LOADED_CLIP
+
+    huge = np.zeros(12)
+    huge[engine.feature_names.index("dll_loaded")] = 11125.0
+    clipped = engine._clip_extreme_features(huge)
+    assert clipped[engine.feature_names.index("dll_loaded")] == DLL_LOADED_CLIP
+
+
+def test_dll_loaded_clip_leaves_normal_values_untouched(engine):
+    """Values already at or below the clip - including the highest value
+    either real ransomware class reaches in training (E: 109) - must pass
+    through unchanged; this is a ceiling for runaway noise, not a general
+    rescaling of the feature."""
+    from src.inference_engine import DLL_LOADED_CLIP
+
+    normal = np.zeros(12)
+    normal[engine.feature_names.index("dll_loaded")] = 109.0
+    clipped = engine._clip_extreme_features(normal)
+    assert clipped[engine.feature_names.index("dll_loaded")] == 109.0
+    assert 109.0 < DLL_LOADED_CLIP
+
+
+def test_apistats_is_not_clipped(engine):
+    """apistats is deliberately excluded from clipping, unlike dll_loaded:
+    class E legitimately reaches into the hundreds/thousands (mean 110.8,
+    max 1671) because real encryptor ransomware calls many cryptographic
+    APIs - clipping it would suppress the attack signal it exists to
+    capture, not just noise. Pin that a large apistats value survives
+    _clip_extreme_features untouched."""
+    large_apistats = np.zeros(12)
+    large_apistats[engine.feature_names.index("apistats")] = 5000.0
+    clipped = engine._clip_extreme_features(large_apistats)
+    assert clipped[engine.feature_names.index("apistats")] == 5000.0
+
+
+def test_classify_aggregated_uses_clipped_dll_loaded_for_both_models(engine, monkeypatch):
+    """End-to-end: a window with an extreme dll_loaded must not reach
+    either the XGBoost classifier or the autoencoder unclipped. Verified
+    by checking the autoencoder's reconstruction error is computed against
+    the clipped value, via a fake aggregator + a reconstruction stand-in
+    that records what it was actually called with."""
+    from src.inference_engine import DLL_LOADED_CLIP
+
+    class _RecordingReconstruction:
+        def __init__(self):
+            self.seen_scaled_inputs = []
+
+        def transform(self, features_df):
+            return features_df.to_numpy()
+
+        def predict(self, features_scaled, verbose=0):
+            self.seen_scaled_inputs.append(features_scaled.copy())
+            return features_scaled  # perfect reconstruction, mse == 0
+
+    class _FakeAggregator:
+        def get_aggregated_features(self):
+            v = np.zeros(12)
+            v[engine.feature_names.index("dll_loaded")] = 11125.0
+            v[engine.feature_names.index("proc_pid")] = 15  # clear min_events
+            return v
+
+        def get_window_stats(self):
+            return {"event_count": 15, "window_seconds": 30, "elapsed_seconds": 30}
+
+        def reset_window(self):
+            pass
+
+    recorder = _RecordingReconstruction()
+    monkeypatch.setattr(engine, "aggregator", _FakeAggregator())
+    monkeypatch.setattr(engine, "autoencoder_scaler", recorder)
+    monkeypatch.setattr(engine, "autoencoder", recorder)
+
+    engine.classify_aggregated()
+
+    assert len(recorder.seen_scaled_inputs) == 1
+    seen_dll_loaded = recorder.seen_scaled_inputs[0][0][engine.feature_names.index("dll_loaded")]
+    assert seen_dll_loaded == DLL_LOADED_CLIP, (
+        f"autoencoder saw dll_loaded={seen_dll_loaded}, expected the clipped "
+        f"value {DLL_LOADED_CLIP}"
+    )

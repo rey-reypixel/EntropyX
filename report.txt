@@ -1454,3 +1454,94 @@ process except one known PID."
 Full data: results/negative_control.json (overwritten with the
 post-fix re-run; pre-fix values preserved in this entry and in
 bugs_debugs.txt's FINDING #12 follow-up), results/finding12_attack_verification.json.
+
+
+-----------------------------------------------------------
+[2026-08-12] Second FINDING #12 fix: clipping dll_loaded closes most of
+the remaining gap - real, measured, correctly-directioned improvement,
+still not full resolution
+-----------------------------------------------------------
+The previous entry's fix (excluding the monitor's own PID) was real but
+insufficient - the anomaly score during an actual attack was still
+lower than during no attack, meaning at least one further noise source
+existed. This entry follows up with a second, targeted fix and the same
+paired live re-verification methodology, rather than stopping at "we
+tried one thing, it didn't fully work."
+
+Root cause reasoning: dll_loaded is a per-window SUM of loaded-module
+counts across every process observed in that window - a property of
+which OTHER software happens to be running, not of attacker behavior.
+Any sufficiently heavy but entirely benign process (this monitor's own
+ML libraries, or - as this session's own live re-tests now show -
+something else on this development machine too) can push it far outside
+anything either ransomware class reaches in training (E max 109, L max
+44), with no relation to malicious activity. Checked whether the same
+reasoning applied to apistats, since it looked superficially similar:
+it does not. Class E legitimately reaches into the hundreds/thousands
+on apistats (mean 110.8, p95 347, max 1671) because real encryptor
+ransomware genuinely calls many cryptographic APIs - clipping it the
+same way would suppress the exact signal it exists to capture, not just
+noise. Chose to clip dll_loaded only, at 150 (comfortably above both
+real classes' observed maxima and goodware's 99th percentile of 121,
+two orders of magnitude below the 10,812 self-noise outlier).
+
+Implemented in src/inference_engine.py: a single clip applied to the
+aggregated feature vector before either model sees it (classify_aggregated
+clips once; detect_anomaly receives the already-clipped array), so both
+detection paths are protected identically without touching the raw
+event log or requiring changes to any monitor file.
+
+Re-verification, same paired methodology as the PID-exclusion fix,
+this fix layered on top (PID exclusion left in place):
+                          PID excl  dll clip  attack   P(Goodware)  anomaly
+  No fixes                  no        no       no        0.8610     280.47
+  PID excl only             yes       no       no        0.9996     124.27
+  PID excl only             yes       no       yes       0.9869     106.94
+  PID excl + dll clip       yes       yes      no        0.9960       6.23
+  PID excl + dll clip       yes       yes      yes       0.9985      13.45
+
+RESULT: the no-attack anomaly score fell 97.8% from the original
+unfixed value (280.47 -> 6.23) - 95.0% of that reduction from this fix
+alone, on top of the PID exclusion. For the first time across this
+entire investigation, the anomaly score discriminates in the CORRECT
+direction: the attack run (13.45) exceeds the no-attack run (6.23), a
+2.16x ratio. This is a genuine, working, if modest, independent anomaly
+signal - something no earlier test in this project, including the
+original pre-audit demo, ever actually demonstrated.
+
+TWO THINGS THIS DOES NOT FIX, reported plainly rather than rounded up
+into a "fixed" claim:
+  1. The classifier still outputs Goodware at 99.85% confidence DURING
+     the attack. Root-caused to a DIFFERENT, already-documented
+     limitation, not new noise: directory_enumerated (the model's
+     highest-importance feature, 20.6%) is capped at roughly 9 in this
+     demo (8 subdirectories, session-scoped counting per the C8 fix),
+     against a training-data median of 14 and 90th percentile of 809
+     for class E. This demo is structurally too small on this one
+     feature for the classifier to ever see training-scale ransomware
+     signal, regardless of anything fixed today - this is the same
+     scale-mismatch limitation already flagged when C8 was fixed
+     earlier in this session, now confirmed as the actual cause of this
+     specific classifier miss rather than a new, unexplained one.
+  2. At config.json's currently deployed anomaly_threshold (0.774228),
+     BOTH 6.23 and 13.45 clear the is_anomaly cutoff (score > 1.0) by a
+     wide margin, so a CRITICAL "zero-day" alert would still fire on
+     ordinary activity in this specific environment - far less
+     extremely than before, but the threshold itself was not
+     recalibrated against this new, much lower noise floor. Doing so
+     would need a fresh run of evaluate_autoencoder.py's percentile
+     search under the clipped feature regime, following BUG #6's own
+     discipline; not attempted here.
+
+FOR THE PAPER: this is the strongest, most positive result of the
+FINDING #12 investigation, and should be reported with both halves -
+the real, large, correctly-directioned improvement, and the two
+specific, honestly-scoped things it does not resolve. "We found the
+noise, fixed most of it, measured exactly how much, and precisely
+diagnosed what's left and why" is a stronger claim than either "fixed"
+or "still broken," and is consistent with how every other finding in
+this project has been reported.
+
+Full data: results/negative_control.json, results/finding12_attack_verification.json
+(both overwritten with this run; prior values preserved in the
+preceding report.txt entry and in bugs_debugs.txt).

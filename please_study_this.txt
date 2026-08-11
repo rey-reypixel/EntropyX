@@ -573,51 +573,73 @@ is not offset by the autoencoder catching the attack anyway - the
 autoencoder's CRITICAL alert in the original demo runs may never have
 been about the attack at all.
 
-UPDATE 2026-08-12: Finding #12's proposed fix (excluding the monitor's
-own PID from process_monitor.py resampling) was actually implemented
-and re-tested, not left as a proposal. Paired re-runs on the identical
-demo/victim_files folder and window:
-                              PID excl.  attack   P(Goodware)  anomaly_score
-  Negative control, pre-fix     no        no       0.8610       280.47
-  Negative control, post-fix    yes       no       0.9996       124.27
-  Attack run, post-fix          yes       yes      0.9869       106.94
-The fix is REAL, not a false lead: no-attack anomaly score dropped
-55.7% and classifier confidence in Goodware during no-attack rose from
-86.1% to 99.96%, confirming the monitor's own process was genuinely
-contributing noise. But it does NOT restore attack detection: during
-the actual attack, post-fix, the anomaly score (106.94) is LOWER than
-the post-fix no-attack score (124.27), and the classifier is even MORE
-confident in Goodware (98.69%) than before the fix. Neither model
-discriminates attack from no-attack after this fix. There is at least
-one more uncontrolled noise source on this machine beyond the monitor's
-own PID (consistent with the dll_loaded=10,812 outlier already in the
-self-collected goodware data, attributed to other heavy background
-software).
+UPDATE 2026-08-12 (two rounds): Finding #12's proposed fix (excluding
+the monitor's own PID) was implemented and re-tested first. Result: real
+but insufficient - cut no-attack anomaly score 55.7% (280.47 -> 124.27)
+but did NOT restore discrimination (attack score 106.94 was LOWER than
+the post-fix no-attack score). Root-caused why and fixed a second time:
+dll_loaded is a per-window SUM across every observed process, so ANY
+sufficiently heavy but benign process (not just the monitor itself) can
+push it far outside training range. Clipped dll_loaded to 150 (grounded
+in real data: E-class max is 109, L-class max is 44, goodware's 99th
+percentile is 121 - so 150 excludes only the self-noise region, not real
+signal) before either model sees it. Did NOT clip apistats the same way
+- class E legitimately reaches into the hundreds/thousands on that
+feature (real crypto API usage), so clipping it would suppress genuine
+attack signal, not just noise.
 
-IF ASKED ABOUT THE DEMO NOW: do not repeat the "two independent
-detection paths, one catches what the other misses" claim using this
-demo as evidence - it is contradicted by the negative control, AND the
-proposed fix does not restore it. Say instead: "We built a live demo,
-found the classifier confused by the monitor's own process noise
-(Finding #12), and initially read the autoencoder's CRITICAL alert as
-the system still catching the attack through its second path. A
-negative control showed that reading was wrong - the same alert fires
-just as strongly with nothing happening. We then implemented and
-tested the proposed fix (excluding the monitor's own PID): it cut the
-false-alarm score by 55.7% and made the classifier meaningfully more
-confident and stable, but it did not restore the system's ability to
-tell an actual attack apart from ambient noise - the anomaly score
-during the real attack was, if anything, lower than during no attack.
-That tells us the problem is broader than 'the monitor sees itself' -
-it's 'the monitor isn't robust to any sufficiently heavy process on the
-machine,' which is a more general, more useful finding than the
-original diagnosis, and still open."
+Full paired re-verification, both fixes together:
+                          PID excl  dll clip  attack   P(Goodware)  anomaly
+  No fixes                  no        no       no        0.8610     280.47
+  PID excl only             yes       no       no        0.9996     124.27
+  PID excl only             yes       no       yes       0.9869     106.94
+  PID excl + dll clip       yes       yes      no        0.9960       6.23
+  PID excl + dll clip       yes       yes      yes       0.9985      13.45
 
-This is a BETTER answer than either defending the original framing or
-claiming a clean fix - it shows you found a flaw, tried a targeted fix,
-measured that the fix partially worked, and were honest that it didn't
-fully solve the problem. That is the whole thesis of this project
-applied to itself, twice over.
+RESULT: no-attack anomaly noise fell 97.8% overall (280.47 -> 6.23).
+For the FIRST TIME in this entire investigation, the anomaly score
+discriminates in the CORRECT direction - attack (13.45) exceeds
+no-attack (6.23), a 2.16x ratio. A real, working, independent anomaly
+signal, which no earlier test (including the original pre-audit demo)
+ever actually showed.
+
+TWO THINGS STILL NOT FIXED, say both if asked:
+  1. The classifier still says Goodware at 99.85% confidence DURING the
+     attack - but this traces to a DIFFERENT, already-known cause, not
+     new noise: directory_enumerated (the model's #1 feature, 20.6%) is
+     capped at ~9 in this small demo (8 subdirectories), against a
+     training median of 14 / p90 of 809 for class E. The demo is
+     structurally too small on this one feature, regardless of anything
+     fixed today.
+  2. At the currently deployed threshold (0.774228), BOTH 6.23 and 13.45
+     still clear the is_anomaly cutoff (score>1.0) by a wide margin, so
+     a CRITICAL alert would still fire on ordinary activity here - far
+     less extremely than before, but the threshold itself wasn't
+     recalibrated against this new, much lower noise floor. Not done.
+
+IF ASKED ABOUT THE DEMO NOW: this is now a genuinely strong answer, not
+just damage control. Say: "We found the classifier confused by the
+monitor's own process noise, ran a negative control that showed our
+first read of the autoencoder's alert was wrong, then fixed it in two
+passes - excluding the monitor's own PID, then clipping the one feature
+(dll_loaded) responsible for the rest of the noise, chosen specifically
+because it's the one feature where extreme values can't represent real
+attacker behavior. Result: a 97.8% noise reduction, and for the first
+time, the anomaly score correctly separates attack from no-attack. The
+classifier still misses this specific attack, but that's a different,
+already-documented limitation - our demo folder is too small for
+directory_enumerated to ever look like training-scale ransomware. And
+the deployed alert threshold still needs recalibrating against the new
+noise floor before this translates into fewer false alarms in
+practice." That is a complete, honest, and genuinely positive story:
+found a flaw, understood it precisely, fixed most of it, measured
+exactly how much, and can name precisely what's left and why.
+
+This is dramatically better than either defending the original framing
+or reporting a clean, complete fix - it shows the same audit discipline
+applied to your own remediation attempts, not just to the original
+defects. That is the whole thesis of this project applied to itself,
+now three times over.
 
 
 =================================================================

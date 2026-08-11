@@ -6,22 +6,22 @@
   "attack_launched_at_second": 5,
   "target_folder": "F:\\New folder\\Summer Internship\\gravity_2.0\\gravity_2\\demo\\victim_files",
   "attack_simulator_invoked": true,
-  "total_raw_events_collected": 1754,
+  "total_raw_events_collected": 251,
   "classification_result": {
     "label": "G",
-    "confidence": 0.98692387342453,
+    "confidence": 0.9985373020172119,
     "probabilities": {
-      "E": 0.009426439180970192,
-      "G": 0.98692387342453,
-      "L": 0.0036497781984508038
+      "E": 0.00023812266590539366,
+      "G": 0.9985373020172119,
+      "L": 0.001224601292051375
     },
-    "timestamp": "2026-08-12 04:03:02",
+    "timestamp": "2026-08-12 04:23:28",
     "window_stats": {
-      "event_count": 1754,
+      "event_count": 251,
       "window_seconds": 30,
-      "elapsed_seconds": 42.181999
+      "elapsed_seconds": 39.710496
     },
-    "anomaly_score": 106.93775173859733,
+    "anomaly_score": 13.449763578141823,
     "is_anomaly": true
   }
 }
