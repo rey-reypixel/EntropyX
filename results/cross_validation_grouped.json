@@ -1,0 +1,84 @@
+{
+  "generated_by": "scripts/cross_validate_grouped.py",
+  "method": "StratifiedGroupKFold, group = exact 12-feature vector (the model's actual input) - see module docstring for why this group key and not a hash of the 50-column source row",
+  "n_folds": 10,
+  "random_state": 42,
+  "dataset_shape": [
+    2999,
+    13
+  ],
+  "n_rows": 2999,
+  "n_distinct_groups": 1346,
+  "group_leakage_violations": 0,
+  "fold_accuracies": [
+    0.8591549295774648,
+    0.4387755102040816,
+    0.8231292517006803,
+    0.9319727891156463,
+    0.9625850340136054,
+    0.891156462585034,
+    1.0,
+    0.8639455782312925,
+    0.7952218430034129,
+    0.9931972789115646
+  ],
+  "mean_accuracy": 0.8559138677342781,
+  "std_accuracy": 0.15389966254590756,
+  "min_accuracy": 0.4387755102040816,
+  "max_accuracy": 1.0,
+  "per_class": {
+    "E": {
+      "precision_mean": 0.8025768085011784,
+      "precision_std": 0.21540456089471652,
+      "recall_mean": 0.8425,
+      "recall_std": 0.16509466981099055,
+      "f1_mean": 0.7890012106737128,
+      "f1_std": 0.1534585822983333
+    },
+    "G": {
+      "precision_mean": 0.9630868366159856,
+      "precision_std": 0.049461709353324,
+      "recall_mean": 0.8736312162811817,
+      "recall_std": 0.2515983108817565,
+      "f1_mean": 0.8852666435157424,
+      "f1_std": 0.21407279896687598
+    },
+    "L": {
+      "precision_mean": 0.6488505747126437,
+      "precision_std": 0.3975287813300205,
+      "recall_mean": 0.6950000000000001,
+      "recall_std": 0.3965160778581368,
+      "f1_mean": 0.6508843537414966,
+      "f1_std": 0.3760053917258059
+    }
+  },
+  "aggregate_confusion_matrix": {
+    "order": [
+      "E",
+      "G",
+      "L"
+    ],
+    "matrix": [
+      [
+        674,
+        76,
+        50
+      ],
+      [
+        245,
+        1754,
+        0
+      ],
+      [
+        50,
+        11,
+        139
+      ]
+    ]
+  },
+  "naive_ungrouped_baseline_for_comparison": {
+    "source_file": "cross_validation_results.txt",
+    "raw_text": "10-Fold Stratified Cross-Validation Results\nDataset: datasets/balanced_dataset.csv (shape (2999, 13))\nClass distribution:\nfamily\nG    1999\nE     800\nL     200\n\nPer-fold accuracy: [np.float64(0.9833), np.float64(0.9833), np.float64(0.9733), np.float64(0.9833), np.float64(0.99), np.float64(0.9733), np.float64(0.9833), np.float64(0.9833), np.float64(0.9867), np.float64(0.9699)]\nMean accuracy: 0.9810\nStd deviation: 0.0062\nMin / Max: 0.9699 / 0.9900\n\nPer-class metrics (mean +/- std):\n  E: precision=1.0000+/-0.0000  recall=0.9300+/-0.0238  f1=0.9636+/-0.0129\n  G: precision=0.9723+/-0.0087  recall=1.0000+/-0.0000  f1=0.9860+/-0.0045\n  L: precision=1.0000+/-0.0000  recall=0.9950+/-0.0150  f1=0.9974+/-0.0077\n\nAggregate confusion matrix (order=['E', 'G', 'L']):\n[[ 744   56    0]\n [   0 1999    0]\n [   0    1  199]]\n"
+  },
+  "interpretation": "This is the number to report as headline accuracy. The naive (ungrouped, shuffled StratifiedKFold) number in cross_validation_results.txt should be reported alongside it, explicitly labeled as inflated by duplicate-vector leakage - not silently dropped, since the delta between the two numbers IS itself part of this project's finding (see results/data_quality.json)."
+}
