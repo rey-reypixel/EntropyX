@@ -1073,3 +1073,181 @@ entries above):
    was never intended to be IEEE-formatted. Noted here as a reminder
    to verify file state rather than assume a script edit implies the
    corresponding output was regenerated.
+
+
+-----------------------------------------------------------
+[2026-08-12] v2 evaluation audit: corrects the headline accuracy,
+the autoencoder F1, and the live-demo narrative - all three numbers
+above are now SUPERSEDED
+-----------------------------------------------------------
+Follow-up work, independent of the 2026-07-21/22 sessions above.
+Re-examined the evaluation methodology itself (not the models or the
+live-collection code) and found three of this project's most-quoted
+results were measuring something other than what they claimed to.
+Full technical detail in bugs_debugs.txt BUG #13 and in
+results/data_quality.json, results/cross_validation_grouped.json,
+results/autoencoder_variance.json, results/negative_control.json - this
+entry is the narrative summary for the paper.
+
+IMPORTANT: the deployed model files (models/practical_xgboost.pkl,
+models/autoencoder_model.keras) were NOT retrained or modified in this
+pass - both are still dated 2026-07-22, from the "TRUE FINAL retrain"
+entry above. Everything in this entry is a RE-EVALUATION of that same
+static balanced_dataset.csv using corrected methodology, run on
+temporary, in-memory models trained fresh for each CV fold / each seed
+and discarded afterward - not a change to what ships.
+
+1. HEADLINE ACCURACY WAS LEAKAGE-INFLATED (supersedes the 98.10% figure
+   throughout this file and please_study_this.txt Section 8)
+
+   results/data_quality.json quantifies why: projecting the 50-feature
+   source dataset down to the 12 features this project can actually
+   collect live collapses class separation hard. The SOURCE dataset is
+   fine at 50 features (1750/2000 rows distinct); at the 12-feature
+   projection, goodware alone collapses from 1000 sandboxed executions
+   to 117 distinct vectors. Across the full 2999-row balanced_dataset.csv,
+   61.5% of rows (1844/2999) share an exact 12-feature vector with at
+   least one other row. src/cross_validate_xgboost.py's
+   StratifiedKFold(shuffle=True) treats every row as independent, so
+   most of a duplicated row's twins land in the training folds under
+   shuffling - the held-out copy is memorised, not generalised to.
+
+   scripts/cross_validate_grouped.py re-ran cross-validation with
+   StratifiedGroupKFold, grouping by the exact 12-feature vector (the
+   model's actual input - not a hash of the 50-column source row, which
+   would under-group and still leak). Zero group-leakage violations
+   confirmed programmatically across all 10 folds.
+
+   RESULT: mean accuracy 85.59% (std 15.39%, range 43.88%-100% across
+   folds) - down from 98.10%. Aggregate confusion matrix (order E/G/L):
+     E: [674,  76,  50]
+     G: [245, 1754,  0]   <- G misclassified as E: ~0 before, 12.3% now
+     L: [ 50,  11, 139]   <- L precision/recall both fell from
+                              near-perfect to ~70%
+
+   Class L's swing is the largest and has a specific, statable cause:
+   only 60 distinct 12-feature vectors exist among the 200 L rows, so a
+   10-fold group-aware split has roughly 6 groups per fold on average -
+   too few for a stable estimate, which is exactly why the fold-to-fold
+   variance is so high (some folds land 100%, one lands 43.88%). This is
+   a genuine data-scarcity limitation (more diverse locker-ransomware
+   samples would fix it), not a methodology flaw or a modeling failure.
+
+   FOR THE PAPER: report 85.59% as headline accuracy. Report 98.10%
+   explicitly labeled as a naive baseline inflated by duplicate-vector
+   leakage, not silently replaced - the DELTA between the two numbers is
+   itself a finding (a demonstrated, quantified example of why k-fold CV
+   on small sandboxed security datasets needs group-awareness), arguably
+   a stronger, more general contribution than either number alone.
+
+2. THE AUTOENCODER WAS EVALUATED ON ITS OWN TRAINING DATA, AND WAS NEVER
+   SEEDED (supersedes the 0.6069 F1 figure and the "TRUE FINAL retrain"
+   entry's framing of the F1 fluctuation as unexplained)
+
+   results/data_quality.json also found: train_autoencoder.py fits on
+   goodware from balanced_dataset.csv; evaluate_autoencoder.py scores
+   ransomware_dataset.csv. 100% of the distinct goodware vectors in that
+   "evaluation" set are present in the training set. The reported 0.508
+   mean goodware error, the 0.541678 threshold, and the 0.6069 F1 were
+   all in-sample - not a held-out result, despite being reported as one.
+
+   Separately, train_autoencoder.py never seeded numpy or TensorFlow.
+   The F1 series reported across retrains in this file (0.70 -> 0.6216
+   -> 0.7036 -> 0.6069) was, each time, attributed to a data or
+   methodology change, with no control for how much was simply a
+   different random initialization.
+
+   scripts/autoencoder_variance_study.py fixes both at once: splits
+   goodware ONCE (fixed random_state, reused across every seed) into 60%
+   train / 20% threshold-calibration / 20% held-out test, never
+   overlapping. Trains a fresh autoencoder per seed on the train split
+   only, selects a threshold via percentile search on the calibration
+   split, reports F1 on the held-out test split the model never touched
+   during training or calibration - across 10 seeds.
+
+   RESULT: held-out F1 = 0.6371 mean, std 0.0201, range 0.6124-0.6802.
+   This study's seed-only range (0.0678) is 55% of the ENTIRE historical
+   fluctuation range (0.1225) reported above. Meaning: roughly half of
+   what looked like "the data changed, so F1 changed" across every
+   retrain in this file was always just training-seed noise, with the
+   same data and architecture held fixed. The other ~45% is likely a
+   real effect of the data/methodology changes made each time - this
+   study cannot separate which specific historical change contributed
+   how much, only that seed noise alone explains a majority of the total
+   swing.
+
+   KNOWN LIMITATION, stated plainly rather than hidden: E/L (ransomware)
+   rows are reused across the threshold-search step and the final-F1
+   step, because only one ransomware dataset exists - splitting it
+   further would leave too few samples for either step to be meaningful.
+   This fixes the GOODWARE side of the contamination; the E/L reuse is a
+   separate, acknowledged constraint, not fixed by this study.
+
+   FOR THE PAPER: report F1 = 0.637 +/- 0.02 (10 seeds) as the corrected
+   number, not a single run. Report the variance-decomposition finding
+   (55% of historical fluctuation explained by seed noise alone) as its
+   own result - it is a legitimate, general point about unseeded
+   training in anomaly-detection retraining pipelines, not specific to
+   this project.
+
+3. THE LIVE DEMO'S CENTRAL CLAIM DOES NOT HOLD UP UNDER A NEGATIVE
+   CONTROL (supersedes demo/DEMO_RUNBOOK.md's framing and
+   bugs_debugs.txt FINDING #12's "not fixed, documented" status - this
+   is now a bigger problem than FINDING #12 described)
+
+   The demo runbook reports anomaly_score = 1.0 in all 3 pre-demo test
+   runs and frames this as the autoencoder independently catching the
+   simulated attack when the classifier (confused by system-wide
+   dll_loaded noise, FINDING #12) reported Goodware - the dual-model
+   defense-in-depth story. Nothing in that testing ever checked what the
+   anomaly score looks like under the SAME conditions with NO attack
+   running - the missing control.
+
+   scripts/negative_control.py runs the real monitor stack (file,
+   process, network, registry - same as production) against
+   demo/victim_files/ (recreated via --setup for environment parity with
+   the original 3 runs) for 35 seconds, but never invokes
+   simulate_ransomware_behavior.py --attack. Ambient system activity
+   (this machine's own background processes, the monitor's own ML
+   library imports) is the only source of events.
+
+   RESULT: label=G, confidence=86.1% (classifier correctly says
+   goodware, as expected with zero attack) - but anomaly_score=280.47,
+   is_anomaly=True. 280x the calibrated threshold, with no attack
+   activity at all. This is only fully visible because of this
+   project's C1/C2 fix (detect_anomaly() no longer caps the score at
+   1.0 - see bugs_debugs.txt BUG #13's sibling fixes, tracked separately
+   in the v2 branch); under the old capped code this would have been
+   indistinguishable from a borderline case reading exactly 1.0.
+
+   This directly contradicts the demo's framing: the SAME signal (in
+   fact a far more extreme version of it) occurs with no attack at all,
+   in the same environment. It does not distinguish attack from no-attack
+   - it appears to fire on this environment's ambient noise regardless.
+   Strongly supports FINDING #12's self-noise explanation, and escalates
+   it: FINDING #12 as written treats the classifier's confusion as the
+   problem and the autoencoder's CRITICAL alert as the system still
+   working. This result says the autoencoder's CRITICAL alert may not be
+   meaningfully attack-correlated at all in this environment.
+
+   FOR THE PAPER: the "dual-model defense-in-depth, autoencoder catches
+   what the classifier misses" framing cannot be used as currently
+   written - it is not supported by this result. Recommended reframing:
+   report the negative control as its own finding (a live system's
+   anomaly-detection path can fire on the monitoring process's own
+   resource footprint, independent of any attack - a genuine, general
+   pitfall for host-based anomaly detection, not unique to this
+   project), and either rerun the demo after implementing FINDING #12's
+   proposed fix (excluding the monitor's own PID from process-monitor
+   sampling) before claiming the dual-model result again, or drop the
+   live-demo dual-model claim from the paper's results entirely and keep
+   it only as a discussed limitation/future-work item.
+
+Overall status: none of the three corrections above required retraining
+or changing any shipped code behavior beyond the C1/C2/C6/C7/C8 fixes
+already committed - they are corrections to HOW the existing pipeline
+was evaluated and demonstrated, not to the pipeline itself. All four
+results/*.json files are the source of truth for these numbers; the
+paper drafts and please_study_this.txt should be updated to cite them
+directly rather than the superseded figures in this file's earlier
+entries.

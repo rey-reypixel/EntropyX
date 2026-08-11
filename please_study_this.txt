@@ -19,9 +19,12 @@ activity, which flags anything that reconstructs badly as a
 possible unknown ('zero-day') threat. The dataset comes from a
 published 2023 paper (Herrera-Silva & Hernandez-Alvarez). Our own
 contribution is building this into an actual live system, and -
-more importantly - a rigorous audit that found and fixed 12 real
+more importantly - a rigorous audit that found and fixed 13 real
 defects in the gap between 'the model tests well offline' and 'the
-system actually works when it's really running', plus honest
+system actually works when it's really running' (including, on a
+second pass, flaws in how we ourselves evaluated the model - a
+duplicate-row leakage that inflated accuracy from 85.6% to a reported
+98.1%, and an autoencoder scored on its own training data), plus honest
 reporting of three things we tried that DIDN'T work."
 
 
@@ -134,9 +137,15 @@ Why 10-fold cross-validation instead of one train/test split?
   splits the data into 10 chunks, trains on 9 and tests on the 1
   left out, ten times (so every row gets tested exactly once), and
   reports a MEAN and STANDARD DEVIATION - which tells you whether a
-  difference between two results is real or just noise. This
-  project's final headline number (98.10% accuracy, std 0.62%) is
-  the 10-fold CV result, deliberately not a single split.
+  difference between two results is real or just noise. 10-fold CV
+  alone was not the end of the story, though: this project later found
+  the ROWS themselves were not independent (duplicate feature vectors
+  from repeated sandbox runs), which shuffled k-fold doesn't protect
+  against - see Section 8's GroupKFold correction (85.59%, not 98.10%).
+  K-fold CV protects against one kind of noise (which split you got);
+  it does not by itself protect against a different kind of leakage
+  (near-duplicate rows landing on both sides of a split). Both matter,
+  and this project needed both fixes at different times.
 
 Why StandardScaler / feature scaling?
   The 12 features are on wildly different numeric scales (e.g.
@@ -361,34 +370,104 @@ LIVE system, plus a set of genuinely reusable findings:
 =================================================================
 SECTION 8: FINAL RESULTS (memorize these numbers)
 =================================================================
-XGBoost Classifier - 10-fold cross-validation, 2,999-row dataset:
-  Mean accuracy:        98.10%  (std 0.62%, 95% CI 97.72%-98.48%)
-  Class E (encryptor):  precision 100.00%,  recall 93.00%,  F1 96.36%
-  Class G (goodware):   precision  97.23%,  recall 100.00%, F1 98.60%
-  Class L (locker):     precision 100.00%,  recall 99.50%,  F1 99.74%
-  Zero goodware samples misclassified as ransomware across the
-  ENTIRE cross-validated evaluation (all 2,999 rows, all 10 folds).
+UPDATED 2026-08-12: the 98.10% and 0.6069 numbers below the line were
+BOTH found to be measuring something other than what they claimed -
+duplicate-vector CV leakage (accuracy) and in-sample evaluation
+(autoencoder F1). Full detail in report.txt's 2026-08-12 entry and
+bugs_debugs.txt BUG #13. THESE are the numbers to say out loud:
 
-  Top 3 most important features: directory_enumerated (27.4%),
-  file_created (13.8%), apistats (12.8%).
+XGBoost Classifier - GroupKFold cross-validation (grouped by exact
+12-feature vector, so no duplicate row is ever split across train/test),
+2,999-row dataset:
+  Mean accuracy:  85.59%  (std 15.39%, range 43.88%-100% across 10 folds)
+  Aggregate confusion matrix (order E/G/L):
+    E: [674,  76,  50]
+    G: [245, 1754,   0]   <- G predicted as E: ~0% before, 12.3% now
+    L: [ 50,  11, 139]    <- L precision/recall both ~70%, down from
+                              near-perfect
 
-Autoencoder (anomaly detector) - evaluated against source dataset:
-  Goodware avg reconstruction error: 0.508
-  Encryptor avg error: 152.4   |   Locker avg error: 291.9
-  Best detection F1: 0.6069 at threshold 0.541678
+  WHY THE DROP: projecting the 50-feature source dataset to this
+  project's 12 live-collectable features collapses class separation -
+  goodware alone collapses from 1000 sandboxed executions to 117
+  distinct feature vectors, and 61.5% of the full dataset's rows share
+  an exact vector with another row. The naive stratified k-fold used
+  before this correction let a duplicated row's twin sit in the
+  training fold, so the "held-out" copy was memorised, not generalised
+  to. That is what 98.10% was actually measuring.
 
-Known, honestly-reported weakness:
-  93.0% recall on encryptor ransomware (class E) - about 1 in 14
-  encryptor samples slips through the classifier. Tried to fix this
-  two ways (class-weighted training, aggressive threshold lowering
-  down to 0.30) - NEITHER helped meaningfully. This tells us the
-  model is CONFIDENTLY wrong on these cases, not just uncertain -
-  meaning it's a real feature/data limitation, not something fixable
-  by tuning knobs.
+  WHY THE VARIANCE IS SO HIGH ON CLASS L SPECIFICALLY: only 60 distinct
+  12-feature vectors exist among the 200 L rows - about 6 groups per
+  fold on average, too few for a stable estimate. This is a genuine
+  data-scarcity limitation (state it as future work: more diverse
+  locker-ransomware samples), not a bug in the evaluation.
+
+  Top 3 most important features (unchanged by this correction - this is
+  a training-time XGBoost property, not a CV-methodology one):
+  directory_enumerated (27.4%), file_created (13.8%), apistats (12.8%).
+
+  STILL WORTH SAYING: 98.10% was the number reported under
+  StratifiedKFold(shuffle=True), treating every row as independent. Say
+  both numbers if asked "what's your accuracy" - the naive one AND the
+  corrected one, explicitly labeling which is which. The gap between
+  them is itself a demonstrated finding about evaluation methodology on
+  small sandboxed security datasets, not something to hide.
+
+Autoencoder (anomaly detector) - seeded (10 seeds) + properly held-out:
+  Held-out F1: 0.6371 mean, std 0.0201, range 0.6124-0.6802
+  (goodware split ONCE into 60% train / 20% threshold-calibration / 20%
+  held-out test, never overlapping; a fresh autoencoder trained per seed
+  on the train split only, threshold chosen on the calibration split,
+  F1 reported on the held-out test split the model never saw)
+
+  WHY THIS REPLACES 0.6069: the old number was evaluated on
+  ransomware_dataset.csv's goodware rows, but 100% of those distinct
+  feature vectors were ALSO in the autoencoder's own training data -
+  not a held-out result, despite being reported as one.
+
+  BONUS FINDING: this study's seed-only F1 range (0.0678, with data and
+  architecture both held fixed) is 55% of the ENTIRE historical
+  fluctuation range (0.1225) reported across four retrains in
+  report.txt (0.70 -> 0.6216 -> 0.7036 -> 0.6069). Meaning: about half
+  of what looked like "the data changed, so F1 changed" each retrain
+  was always just unseeded training noise. Report F1 with error bars
+  (mean +/- std over multiple seeds), never a single run, going forward.
+
+  KNOWN LIMITATION, say it if asked: E/L (ransomware) rows are reused
+  across the threshold-search step and the final-F1 step, because only
+  one ransomware dataset exists. This study fixes the GOODWARE side of
+  the contamination; the E/L reuse is a separate, smaller, acknowledged
+  constraint.
+
+Known, honestly-reported weakness (E-class recall - DIAGNOSIS CORRECTED
+2026-08-12, see below):
+  93.0% recall on encryptor ransomware (class E) under the OLD
+  (leakage-inflated) single-split evaluation - about 1 in 14 encryptor
+  samples slips through the classifier. Tried to fix this two ways
+  (class-weighted training, aggressive threshold lowering down to 0.30)
+  - NEITHER helped meaningfully.
+
+  THE REAL REASON, found via results/data_quality.json: 40 of the 800 E
+  rows have ALL TWELVE features equal to zero - and are byte-identical
+  to 255 rows labelled G. Same input vector, two different labels: no
+  classifier can be correct on both. This caps E recall at
+  (800-40)/800 = 95.0% by construction, REGARDLESS of model, weighting,
+  or threshold - which is exactly why neither fix helped. All 295
+  all-zero rows trace to the SOURCE dataset (Cuckoo Sandbox runs that
+  produced none of these 12 signals in their execution window); none
+  come from the self-collected goodware.
+
+  OLD (WRONG) framing: "the model needs better features or more E-class
+  data because it's confidently wrong on ambiguous cases."
+  CORRECT framing: "the 12-feature projection maps a specific subset of
+  the source data to a contradictory vector shared across two classes -
+  this is a property of the practical feature subset, not a modeling
+  failure, and better features (true API hooking instead of the current
+  proxies) is still the right fix, but 'confidently wrong' undersells
+  how mechanical the cause actually is."
 
 
 =================================================================
-SECTION 9: THE 12 FINDINGS, ONE-LINE EACH (full detail in
+SECTION 9: THE 13 FINDINGS, ONE-LINE EACH (full detail in
 bugs_debugs.txt)
 =================================================================
  1. CRITICAL - 3 of 12 features always zero in production (41% of
@@ -412,11 +491,30 @@ bugs_debugs.txt)
     ATTEMPTED, made things WORSE, reverted - honest negative result
 12. MEDIUM - process monitor picks up the monitoring system's own
     library-loading noise, confusing the classifier (found during
-    demo prep, documented, not yet fixed)
+    demo prep - see #13, this got WORSE on closer examination, not fixed)
+13. HIGH - [2026-08-12] a raw-telemetry file committed to the repo
+    tripped GitHub's secret scanner (a VS Code internal UUID, almost
+    certainly a false positive) - purged from all git history, and the
+    underlying class of risk (verbatim command-line/network captures
+    that could catch a REAL secret next time) fixed by excluding that
+    whole file class going forward, not just the one flagged file
+
+ALSO [2026-08-12], not a numbered bug but bigger than #12 as originally
+scoped: a negative-control test (see Section 10 below) shows the
+autoencoder's anomaly path fires at 280x the calibrated threshold with
+ZERO attack running, using the same demo folder as the original 3 test
+runs. This means #12's framing ("the classifier is confused but the
+autoencoder still catches the attack") is not supported - the anomaly
+signal does not appear to distinguish attack from no-attack in this
+environment at all.
 
 
 =================================================================
 SECTION 10: THE LIVE DEMO - WHAT HAPPENS AND WHY
+(REWRITTEN 2026-08-12 - the old "dual-model defense-in-depth" framing
+below does NOT hold up under a negative control. Read this whole
+section before demoing or discussing this live - do not use the old
+framing.)
 =================================================================
 The demo runs a safe, self-contained "attack simulator"
 (demo/simulate_ransomware_behavior.py) against a throwaway folder
@@ -424,14 +522,54 @@ of 400 dummy files, exercising real file read/write/delete
 operations and real cryptographic module usage (Python's hashlib),
 while the actual WatchRansom monitor watches live.
 
-What you will see: the AUTOENCODER reliably fires a CRITICAL
-"ZERO-DAY THREAT" alert (anomaly_score = 1.0, tested 3 times). The
-XGBOOST CLASSIFIER, in testing, said "Goodware" instead of
-"Ransomware" - traced to Finding #12 above (system-wide process
-noise from the monitor's own ML libraries). Explain this honestly
-if asked, don't hide it - it's a genuine, interesting finding, not
-a scripted failure, and it demonstrates exactly why having two
-independent models matters.
+What the original 3 pre-demo test runs showed: the AUTOENCODER fired a
+CRITICAL "ZERO-DAY THREAT" alert (anomaly_score = 1.0) every time. The
+XGBOOST CLASSIFIER said "Goodware" instead of "Ransomware" - traced to
+Finding #12 (system-wide process noise from the monitor's own ML
+libraries). This was originally framed as the dual-model design
+working exactly as intended: one model confused, the other still
+catches the attack.
+
+THAT FRAMING IS NOW KNOWN TO BE UNSUPPORTED. scripts/negative_control.py
+ran the identical monitor stack against the identical demo/victim_files
+folder, for the same ~30s window, WITHOUT ever running --attack. Result:
+label=G (classifier correctly says goodware, confidence 86.1%) but
+anomaly_score=280.47, is_anomaly=True - a FAR more extreme anomaly
+signal than the original demo's capped 1.0, with zero attack activity
+at all. (The score can now exceed 1.0 because of this project's own
+C1/C2 fix removing an old artificial cap - see bugs_debugs.txt; the
+original demo's "1.0" was already at that cap and could never have shown
+this.)
+
+WHAT THIS MEANS: the same anomaly signal the demo relied on to tell the
+"still caught it" story fires just as strongly - more strongly, in fact
+- with no attack running. It does not appear to distinguish "attack
+happening" from "monitor's own ambient resource footprint" in this
+environment. The honest conclusion is that FINDING #12's noise problem
+is not offset by the autoencoder catching the attack anyway - the
+autoencoder's CRITICAL alert in the original demo runs may never have
+been about the attack at all.
+
+IF ASKED ABOUT THE DEMO NOW: do not repeat the "two independent
+detection paths, one catches what the other misses" claim using this
+demo as evidence - it is contradicted by the negative control. Say
+instead: "We built a live demo, found the classifier confused by the
+monitor's own process noise (Finding #12), and initially read the
+autoencoder's CRITICAL alert as the system still catching the attack
+through its second path. Running a negative control - the same setup,
+no attack - showed the same alert fires just as strongly with nothing
+happening, which means that reading was wrong. This is itself a
+valuable finding: host-based anomaly detectors can fire on their own
+monitoring footprint, independent of any real attack, and you have to
+explicitly test for that with a negative control before trusting a
+positive result. We now believe fixing Finding #12 (excluding the
+monitor's own PID from process sampling) is a precondition for the
+demo meaning anything, not an optional cleanup item."
+
+This is a BETTER answer than defending the original framing - it shows
+you found a flaw in your own evaluation and didn't just report the
+result that looked good. That is the whole thesis of this project
+applied to itself.
 
 
 =================================================================
@@ -451,22 +589,35 @@ A: Tabular data with 12 numeric features and likely non-linear
 
 Q: "Why not just use the autoencoder alone, or the classifier
    alone?"
-A: They catch different things. The classifier is precise on known
-   patterns but can only recognize what it was trained on. The
-   autoencoder needs no ransomware examples at all, so it can catch
-   NOVEL ransomware, but has a higher false-positive tendency and
-   no ability to name WHICH kind of threat it is. Using both is a
-   defense-in-depth strategy - demonstrated concretely in our own
-   demo, where the classifier missed a live attack but the
-   autoencoder caught it.
+A: They catch different things in principle - the classifier is precise
+   on known patterns but can only recognize what it was trained on; the
+   autoencoder needs no ransomware examples at all, so it can in
+   principle catch NOVEL ransomware, at the cost of a higher false-
+   positive tendency and no ability to name WHICH kind of threat it is.
+   UPDATE 2026-08-12: we CANNOT currently cite our own demo as
+   confirming this - a negative control (Section 10) showed the same
+   anomaly signal our demo relied on fires just as strongly with no
+   attack running at all. Say the theoretical case for defense-in-depth
+   honestly, but do not claim the demo as evidence for it until Finding
+   #12 is actually fixed and the demo is rerun.
 
-Q: "How do you know 98.10% is a real number and not overfitting /
-   lucky?"
-A: It's a 10-fold cross-validated MEAN with a standard deviation
-   (0.62%) and 95% confidence interval (97.72%-98.48%), not a
-   single lucky split - and we specifically adopted this
-   methodology after observing single-split numbers fluctuate by
-   noise alone across retrains.
+Q: "How do you know [accuracy number] is a real number and not
+   overfitting / lucky?"
+A: Two separate things had to be checked, and only checking the first
+   one is not enough: (1) k-fold cross-validation, reporting a MEAN and
+   STANDARD DEVIATION across folds rather than one split, which is why
+   we don't trust a single train_test_split number; but ALSO (2)
+   whether the folds themselves are independent. We initially reported
+   98.10% (std 0.62%) from ordinary shuffled 10-fold CV, then found the
+   dataset has extensive duplicate feature vectors (repeated sandbox
+   runs collapsing to the same 12-feature values) that shuffled CV
+   doesn't protect against - a "held-out" row's exact duplicate could
+   still be sitting in the training fold. Re-ran with GroupKFold
+   (grouping by exact feature vector, so duplicates can never split
+   across train/test): 85.59% (std 15.39%). That's the number we now
+   report as headline, with the 98.10% figure kept alongside it,
+   explicitly labeled as inflated by duplicate-row leakage - the gap
+   between the two is itself part of the finding.
 
 Q: "What happens if ransomware encrypts files very slowly, to
    stay under the radar?"
@@ -486,16 +637,22 @@ A: Yes, plausibly, in several ways we're upfront about: slow
    crypto APIs, for instance). No detection system is unevadable;
    the goal is raising the cost/skill required, not perfect defense.
 
-Q: "Why is recall on encryptor ransomware only 93%, and why
-   didn't you just fix it?"
+Q: "Why is recall on encryptor ransomware capped around 93-95%, and
+   why didn't you just fix it?"
 A: We tried two standard fixes (class-weighted training, threshold
    tuning down to a very permissive 0.30) and BOTH failed to move
-   the number meaningfully. That tells us the misclassified samples
-   are confidently (not marginally) predicted wrong - a genuine
-   feature/data limitation, not a tunable knob. Real fixes would
-   need better features (true API hooking) or more/different
-   training data, both flagged as future work. We'd rather report
-   an honest 93% with a clear explanation than force a fake fix.
+   the number meaningfully - which was itself the clue. Root-caused it
+   afterward (results/data_quality.json): 40 of the 800 encryptor rows
+   have ALL TWELVE features equal to zero, and are byte-identical to
+   255 rows labelled Goodware. Same input, two different labels - no
+   classifier can be correct on both, which caps E recall at
+   (800-40)/800 = 95.0% by construction, independent of model, weights,
+   or threshold. That's exactly why neither standard fix helped. All 295
+   all-zero rows trace to the source sandbox dataset, not our own
+   collection. Real fixes would need better features (true API hooking
+   instead of the current proxies) so fewer rows collapse to all-zero
+   in the first place - flagged as future work. We'd rather report the
+   mechanical cause than a vaguer "confidently wrong" framing.
 
 Q: "What's actually novel here versus just running someone else's
    dataset through XGBoost?"
@@ -503,9 +660,10 @@ A: See Section 7 above in full - short version: the dataset is
    third-party (properly cited), but everything about making it
    drive a real, live, continuously-running detection system - the
    proxy feature design, the systematic training-serving-gap audit
-   that found and fixed 12 real defects, the rigorous CV-based
-   evaluation, and the honest reporting of failed fix attempts - is
-   this project's own work.
+   that found and fixed 13 real defects, the rigorous group-aware CV
+   evaluation (including catching and correcting our OWN evaluation
+   leakage after the fact), and the honest reporting of failed fix
+   attempts - is this project's own work.
 
 Q: "Is the prevention/auto-response feature (killing processes,
    locking files, disabling network) actually tested?"
@@ -528,8 +686,8 @@ Q: "Isn't leaving network isolation and filesystem lock completely
    untested a weakness in the paper?"
 A: Not a weakness in the paper's actual argument, because prevention
    was never central to it. THE CENTER OF THIS PAPER IS DETECTION,
-   not automated response: the 98.10% cross-validated accuracy
-   result and the training-serving-gap engineering audit (12
+   not automated response: the 85.59% group-validated accuracy
+   result and the training-serving-gap engineering audit (13
    findings) are 100% about whether the system correctly IDENTIFIES
    ransomware behavior. Automated response is a secondary,
    bolt-on capability - it appears in zero results, zero abstract
