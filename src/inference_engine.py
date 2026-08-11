@@ -51,6 +51,14 @@ class RansomwareInferenceEngine:
         
         self.classification_threshold = ml_config.get("classification_threshold", 0.85)
         self.anomaly_threshold = ml_config.get("anomaly_threshold", 0.5)
+        if self.anomaly_threshold <= 0:
+            raise ValueError(
+                f"ml.anomaly_threshold must be > 0 (got {self.anomaly_threshold}). "
+                "It is a raw reconstruction-error (MSE) calibration value, taken "
+                "from evaluate_autoencoder.py's percentile-search output - not a "
+                "normalized 0-1 score. A value <= 0 would make detect_anomaly() "
+                "divide by zero or by a negative number."
+            )
         
         agg_config = ml_config.get("aggregation", {})
         window_seconds = agg_config.get("window_seconds", 30)
@@ -146,10 +154,17 @@ class RansomwareInferenceEngine:
         try:
             # Get aggregated features
             features = self.aggregator.get_aggregated_features()
-            total_events = np.sum(features)
-            
+
+            # Gate on the REAL event count (same definition should_classify()
+            # uses), not a sum of feature magnitudes. The previous version
+            # summed the feature vector itself, which mixes counts (proc_pid,
+            # file_created, ...) with magnitudes like command_line (cumulative
+            # character length, easily in the thousands) - a single event
+            # could trivially clear the "min_events" bar. See v2 audit C6.
+            event_count = self.aggregator.get_window_stats()["event_count"]
+
             # Check if we have enough events to perform classification
-            if total_events < self.min_events:
+            if event_count < self.min_events:
                 # Reset the window to avoid stale events carrying over
                 self.aggregator.reset_window()
                 return None
@@ -208,7 +223,14 @@ class RansomwareInferenceEngine:
             if self.autoencoder is not None:
                 anomaly_score = self.detect_anomaly(features)
                 result["anomaly_score"] = float(anomaly_score)
-                result["is_anomaly"] = bool(anomaly_score > self.anomaly_threshold)
+                # anomaly_score is already expressed in units of the
+                # threshold (raw MSE / threshold, uncapped - see
+                # detect_anomaly's docstring), so ">1.0" IS "raw MSE exceeded
+                # the calibrated threshold". Comparing it against
+                # self.anomaly_threshold again (a second time, in a different
+                # unit) was the C1 bug - it made is_anomaly trigger on ~19%
+                # of goodware instead of the calibrated ~5%.
+                result["is_anomaly"] = bool(anomaly_score > 1.0)
             
             # Reset window after classification
             self.aggregator.reset_window()
@@ -226,52 +248,46 @@ class RansomwareInferenceEngine:
     def detect_anomaly(self, features):
         """
         Detect anomalies using autoencoder reconstruction error.
-        
+
         Args:
             features: Raw feature vector
-            
+
         Returns:
-            Normalized anomaly score (0-1)
+            Anomaly score = raw MSE / calibrated threshold. NOT capped at 1.0:
+            a score of 1.0 means the reconstruction error exactly equals the
+            calibrated threshold, and values above 1.0 preserve how far past
+            it the error actually is. is_anomaly (in classify_aggregated) is
+            defined as anomaly_score > 1.0, which is exactly mse > threshold
+            in the original MSE units - see bugs_debugs.txt BUG #6 / the v2
+            audit's C1/C2 findings for why capping this at 1.0 and then
+            comparing it against the raw threshold again was wrong: it made
+            is_anomaly trigger on ~19% of goodware instead of the calibrated
+            ~5%, and made any anomaly_threshold > 1.0 silently disable
+            is_anomaly forever, since the capped score could never exceed 1.0.
         """
         try:
             # Convert to DataFrame with feature names to avoid sklearn warning
             features_df = pd.DataFrame([features], columns=self.feature_names)
-            
+
             # Scale features
             features_scaled = self.autoencoder_scaler.transform(features_df)
-            
+
             # Reconstruct
             reconstructed = self.autoencoder.predict(features_scaled, verbose=0)
-            
+
             # Calculate reconstruction error
             mse = np.mean(np.square(features_scaled - reconstructed))
-            
-            # Use threshold from config (calibrated from training data)
-            # Based on autoencoder_results.csv analysis
+
+            # Express error in units of the calibrated threshold (see docstring
+            # above for why this must not be capped at 1.0).
             threshold = self.anomaly_threshold
-            normalized_score = min(mse / threshold, 1.0)
-            
-            return normalized_score
-            
+            anomaly_score = mse / threshold
+
+            return anomaly_score
+
         except Exception as e:
             print(f"[ERROR] Anomaly detection failed: {e}")
             return 0.0
-    
-    def batch_classify(self, events):
-        """
-        Classify multiple events at once.
-        
-        Args:
-            events: List of event dictionaries
-            
-        Returns:
-            List of classification results
-        """
-        results = []
-        for event in events:
-            result = self.classify_event(event)
-            results.append(result)
-        return results
 
 
 # ==========================================================

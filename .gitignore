@@ -10,6 +10,11 @@ demo/victim_files/
 __pycache__/
 *.pyc
 
+# Project-local virtual environment (Python 3.12 + pandas/sklearn/xgboost/
+# tensorflow/joblib/psutil/watchdog/pytest) - recreate with:
+#   python -m venv .venv && .venv/Scripts/pip install pandas numpy scikit-learn xgboost tensorflow joblib psutil watchdog pytest
+.venv/
+
 # Editor/OS cruft
 .DS_Store
 Thumbs.db
