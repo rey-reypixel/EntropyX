@@ -656,5 +656,78 @@ instead: rely on the autoencoder's independent anomaly-detection path
 as a live illustration of the training-serving gap theme rather than
 hiding or working around it.
 
+-----------------------------------------------------------
+BUG #13  [2026-08-12]  SEVERITY: HIGH  Component: repo hygiene (.gitignore, git history)
+-----------------------------------------------------------
+Description:
+  While pushing the v2 fix branch to GitHub, GitHub's secret scanning
+  flagged two "OpenVSX Access Token" alerts:
+    - monitor/logs/alerts.json, line 696
+    - datasets/new_session2_events.csv, line 576
+  Both files had been committed to the v1 baseline (and pushed) without
+  auditing their CONTENT for sensitive data first - only filenames had
+  been checked for anything obviously secret-shaped (.env, credentials,
+  etc.), which these two didn't look like.
+
+Investigation:
+  Pulled the exact flagged lines from the committed blob. Both matches
+  are the value of a `--vscode-window-config=vscode:<uuid>` argument
+  inside a captured VS Code renderer process's command_line - a UUID
+  VS Code's own Electron process generates internally to pass window
+  state between processes, unrelated to Open VSX Registry authentication.
+  No "ovsx", "openvsx", or "publish" string appears anywhere near either
+  match. Conclusion: GitHub's detector matched on UUID *shape* (Open VSX
+  personal access tokens are also UUID-formatted), not a real credential
+  - almost certainly a false positive, not an actual leaked token.
+
+  This happened because monitor/process_monitor.py's command_line capture
+  records a process's full command line VERBATIM, and monitor/logs/
+  alerts.json / datasets/new_session*_events.csv are raw captures of that
+  - not aggregated statistics like datasets/normal_activity.csv or
+  balanced_dataset.csv. A UUID from VS Code's own internals was the
+  coincidental match this time; a REAL secret (an API key or token typed
+  or passed on a command line during a monitoring session) would have
+  been captured and committed exactly the same way, with no special
+  handling to prevent it. The false-positive alert is what caught an
+  otherwise-invisible structural risk in these files' contents.
+
+  A repo-wide grep for other credential-shaped patterns (API keys, cloud
+  provider key formats, bearer tokens, private key headers, GitHub
+  tokens) across every tracked file came back clean - no other instance
+  found.
+
+Impact:
+  Two files carrying a genuine (if not fully realized, in this instance)
+  risk of leaking real secrets had already been pushed to a public GitHub
+  repo. Even a false-positive alert means the underlying file class -
+  raw, verbatim process/network telemetry - should never have been
+  committed in the first place; only this one coincidental UUID match is
+  what surfaced the gap.
+
+Fix [2026-08-12]:
+  1. Purged monitor/logs/alerts.json, monitor/logs/alerts.csv, and
+     datasets/new_session_events.csv / new_session2_events.csv from
+     EVERY commit in git history (git-filter-repo, not just a delete-
+     going-forward commit - the goal is that the flagged content is no
+     longer reachable from any ref, not merely absent from the latest
+     commit). Verified by content search across `git log --all -p`, not
+     just a filename check, that the exact flagged UUID strings are gone
+     from all history.
+  2. Force-pushed the rewritten history to origin/main.
+  3. .gitignore expanded from three specific runtime-log filenames to
+     cover the whole class: monitor/logs/alerts.csv, alerts.json, and
+     datasets/new_session*_events.csv, alongside the already-excluded
+     events.csv/network_log.csv/process_log.csv. The three "aggregated
+     feature" datasets (normal_activity.csv, balanced_dataset.csv,
+     ransomware_dataset.csv) are NOT excluded - they hold numeric
+     feature counts per 30-second window, never raw command lines, so
+     they don't carry this risk.
+
+Status: FIXED (history purged, .gitignore now excludes the whole file
+class rather than filenames noticed one at a time). Recommend as a
+standing rule for this project: any file containing raw process/network
+telemetry (full command lines, connection details) stays out of version
+control by default; only aggregated/derived statistics get committed.
+
 ===========================================================
 (Further entries appended as work proceeds.)
