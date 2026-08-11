@@ -38,19 +38,29 @@ def _empty_feature_counts():
     }
 
 
-def _apply_event_to_counts(feature_counts, source, event_type, details):
+def _apply_event_to_counts(feature_counts, source, event_type, details, seen_dirs):
     """
     Update feature_counts in place based on a single event. Mirrors the
     live aggregation logic in src/event_aggregator.py so offline
     reprocessing and live inference stay consistent.
+
+    seen_dirs: the set of directories already seen in the CURRENT window
+    being built by the caller. Must be a fresh set() per window (the caller
+    resets it alongside feature_counts each time a window closes) - see v2
+    audit finding C8. This mirrors event_aggregator.py's
+    seen_dirs_this_window exactly; if you change one, change the other.
     """
     if source == 'file':
         if event_type == 'created':
             feature_counts["file_created"] += 1
         elif event_type == 'modified':
             feature_counts["file_read"] += 1
-        if details.get('new_directory'):
-            feature_counts["directory_enumerated"] += 1
+        path = details.get('path')
+        if path:
+            directory = os.path.dirname(os.path.abspath(path))
+            if directory not in seen_dirs:
+                seen_dirs.add(directory)
+                feature_counts["directory_enumerated"] += 1
         # "deleted" is intentionally not counted - see bugs_debugs.txt BUG #2
 
     elif source == 'process':
@@ -133,6 +143,7 @@ def process_event_log_to_training_format(event_log_path="monitor/logs/events.csv
 
     collected_samples = []
     feature_counts = _empty_feature_counts()
+    seen_dirs = set()  # reset per window alongside feature_counts - see C8
     current_window_end = None
     event_count = 0
     total_events = 0
@@ -164,6 +175,7 @@ def process_event_log_to_training_format(event_log_path="monitor/logs/events.csv
 
                 # Start a fresh window beginning at this event's timestamp
                 feature_counts = _empty_feature_counts()
+                seen_dirs = set()
                 event_count = 0
                 current_window_end = timestamp + timedelta(seconds=window_seconds)
 
@@ -174,7 +186,7 @@ def process_event_log_to_training_format(event_log_path="monitor/logs/events.csv
             except (json.JSONDecodeError, TypeError):
                 details = {}
 
-            _apply_event_to_counts(feature_counts, source, event_type, details)
+            _apply_event_to_counts(feature_counts, source, event_type, details, seen_dirs)
             event_count += 1
 
     if skipped:

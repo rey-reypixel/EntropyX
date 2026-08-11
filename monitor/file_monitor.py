@@ -34,25 +34,20 @@ class FileMonitorHandler(FileSystemEventHandler):
         # Normalize and add standard ignore patterns to prevent self-monitoring
         self.ignore_patterns.extend([".git", "__pycache__", "node_modules", "monitor/logs", "monitor\\logs"])
 
-        # Cost-free supplementary signal for "directory_enumerated" (see
-        # bugs_debugs.txt BUG #9). The process-level open_files()-based proxy in
-        # process_monitor.py is too expensive to poll continuously, so it only
-        # samples at process birth. This tracks distinct directories touched by
-        # real (watchdog, event-driven - no polling cost) file activity within
-        # the monitored folder, which is exactly the kind of signal ransomware
-        # reconnaissance/scanning would produce, and adds it as a second source
-        # for the same feature. Grows for the life of the monitoring session
-        # (a directory counts as "new" once, not once per window) - a burst of
-        # activity across many previously-untouched directories still produces
-        # a large signal within whatever window it happens in.
-        self.seen_dirs = set()
-
-    def _is_new_directory(self, file_path):
-        directory = os.path.dirname(os.path.abspath(file_path))
-        if directory in self.seen_dirs:
-            return False
-        self.seen_dirs.add(directory)
-        return True
+        # NOTE: this handler intentionally does NOT track "have I seen this
+        # directory before" itself. That was tried here originally (a
+        # session-lifetime seen_dirs set) as a cost-free supplementary signal
+        # for "directory_enumerated" (see bugs_debugs.txt BUG #9), but a
+        # directory can only ever be "new" ONCE for the life of the whole
+        # monitoring session, not once per 30-second aggregation window - so
+        # after the first window, this signal always read 0, despite
+        # directory_enumerated being the model's single highest-importance
+        # feature (v2 audit finding C8). "New within the current window" is a
+        # window-lifecycle concept, which this handler has no visibility into
+        # (it doesn't know when a window opens/closes) - src/event_aggregator.py
+        # does, and now owns this tracking itself, resetting it in
+        # reset_window(). This handler just reports the file path; the
+        # aggregator decides whether that path's directory is new-this-window.
 
     def should_ignore(self, path):
         if not path:
@@ -84,8 +79,7 @@ class FileMonitorHandler(FileSystemEventHandler):
             process="Unknown",
             pid=-1,
             details={
-                "path": event.src_path,
-                "new_directory": 1 if self._is_new_directory(event.src_path) else 0
+                "path": event.src_path
             }
         )
 
@@ -99,8 +93,7 @@ class FileMonitorHandler(FileSystemEventHandler):
             process="Unknown",
             pid=-1,
             details={
-                "path": event.src_path,
-                "new_directory": 1 if self._is_new_directory(event.src_path) else 0
+                "path": event.src_path
             }
         )
 

@@ -160,8 +160,15 @@ Combined Detection Logic
 1. XGBoost classifies activity (G/E/L)
 2. If ransomware confidence ≥ 85% → CRITICAL ALERT
 3. Autoencoder calculates reconstruction error
-4. If anomaly score ≥ 0.18 → ZERO-DAY THREAT ALERT
-5. Both models must agree for highest confidence alerts
+4. If anomaly score exceeds the calibrated threshold → ZERO-DAY THREAT ALERT
+5. EITHER model can independently trigger CRITICAL - they do NOT need to
+   agree. This is intentional: the autoencoder's purpose is to catch
+   activity the classifier misses (and vice versa), so requiring
+   agreement would defeat the defense-in-depth design (see
+   please_study_this.txt Section 2, "Why use BOTH models instead of just
+   one?", and the live demo in demo/DEMO_RUNBOOK.md, where exactly this
+   scenario occurs: the classifier reports Goodware while the autoencoder
+   independently fires CRITICAL on the same attack).
 
 ## 11. Alert Levels
 

@@ -1,4 +1,5 @@
 import numpy as np
+import os
 from collections import defaultdict
 from datetime import datetime, timedelta
 import threading
@@ -19,7 +20,13 @@ class EventAggregator:
         self.events_buffer = []
         self.lock = threading.Lock()
         self.window_start_time = datetime.now()
-        
+
+        # Directories touched by file events WITHIN THE CURRENT WINDOW ONLY.
+        # See reset_window() and _update_feature_counts() - this is the
+        # window-scoped replacement for the session-scoped tracking that used
+        # to live in monitor/file_monitor.py (v2 audit finding C8).
+        self.seen_dirs_this_window = set()
+
         # Feature counters for current window
         self.feature_counts = {
             "file_read": 0,
@@ -65,8 +72,18 @@ class EventAggregator:
             # file-system activity (see bugs_debugs.txt BUG #9) - supplements
             # the process-level open_files()-based proxy, which is too
             # expensive to poll continuously and only samples at process birth.
-            if details.get("new_directory"):
-                self.feature_counts["directory_enumerated"] += 1
+            # Tracked here (not in file_monitor.py) and reset per-window in
+            # reset_window(), so a directory can be "new" again in a later
+            # window instead of only once for the entire monitoring session
+            # (v2 audit finding C8 - directory_enumerated is the model's
+            # single highest-importance feature and was reading 0 for every
+            # window after the first).
+            path = details.get("path")
+            if path:
+                directory = os.path.dirname(os.path.abspath(path))
+                if directory not in self.seen_dirs_this_window:
+                    self.seen_dirs_this_window.add(directory)
+                    self.feature_counts["directory_enumerated"] += 1
             # "deleted" events are intentionally not mapped to any of the
             # 12 trained features (there is no deletion-specific feature
             # in the model). Previously this was miscounted as
@@ -137,6 +154,7 @@ class EventAggregator:
             self.events_buffer = []
             for key in self.feature_counts:
                 self.feature_counts[key] = 0
+            self.seen_dirs_this_window = set()
             self.window_start_time = datetime.now()
     
     def get_window_stats(self):
